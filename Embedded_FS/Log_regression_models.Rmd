@@ -1,0 +1,1144 @@
+---
+title: "Log_regression_models"
+output: html_document
+date: "2022-11-20"
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(factoextra)
+library(glmnet)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+```
+
+```{r}
+source("C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+```
+
+```{r GLM ACCESSORY FUNCTIONS FUNCTION}
+# Takes a list of CV.glmnet objects, obtained the coefficients from every single one, then averages them
+get_cv_coefs = function(model_list, condense = T, plot = T){
+  # Arg1 is just a glmnet model of type multinom
+  # Arg2 (default T) determines whether or not the zero beta rows should be
+  # removed from the final matrix
+  coef_df = NULL
+  for (model in model_list){
+    betas = coef(model, s='lambda.1se')
+    coefs = data.frame(Pair = rownames(betas[[1]]))
+    for(num in 1:4){
+      coefs = cbind(coefs, betas[[num]][,1])
+      colnames(coefs)[num+1] = rownames(as.matrix(betas[num]))
+    }
+    if(condense == T){
+      coefs = filter(coefs, coefs[2]!=0)
+    }
+    if (is.null(coef_df)){
+      coef_df = coefs
+    }
+    else{
+      coef_df = rbind(coef_df, coefs)
+    }
+  }
+  coef_df = coef_df %>% group_by(Pair) %>% summarize_all(mean)
+
+  if (plot == T){
+    coef_plot = coef_plot(coef_df)
+  }
+  return(list("coef_df" = coef_df,
+              "coef_plot" = coef_plot))
+}
+
+
+coef_plot = function(coef_df){
+  coef_df = coef_df %>% mutate_if(is.numeric, abs)
+  coef_plot = coef_df %>% pivot_longer(col = -Pair,
+                                       names_to = 'variant') %>%
+                          ggplot(aes(x=reorder(Pair, -value), y=value, fill=variant))+
+                          geom_bar(position = 'dodge', stat='identity')+
+                          labs(
+                            title = 'Average (absolute value) lasso coefficients by variant',
+                            x = "Pairs",
+                            y = 'Coefficient'
+                          ) +
+                          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+                          scale_fill_brewer(palette = 'Dark2')
+  return(coef_plot)
+}
+
+
+# USED BY THE MULTI_PERFORMANCE_VIZ FUNCTION TO OBTAIN PERFORMANCE METRICS FROM EACH ELEMENT WITHIN THE LIST
+# Only compatible with current performance metric output (rows: iteration, accuracy, kappa, delta_F1, omi_F1, wt_F1, beta_F1, average_F1)
+extract_performance_metrics = function(list_of_results, ordered_list_of_dabs, object_to_obtain = 'performance_metrics'){
+  # Getting averages
+  # Getting Kappa and accuracy
+  performance_metric_list = sapply(list_of_results, function (x) x[object_to_obtain])
+  averages = sapply(performance_metric_list, function (x) x %>% filter(iteration == 'Averages'))
+  Accuracy = unlist(averages[row.names(averages) == 'accuracy'])
+  Kappa = unlist(averages[row.names(averages) == 'kappa'])
+  
+  # Produces a list (#dabs * 4 in length) that contains the values in the following arrangement:
+  #     dab1_delta, dab1_omi, dab1_wt, dab1_beta, dab2_delta, dab2_omi, dab2_wt dab2_beta, ...
+  #     the order is dependent on the rownames ordering in the matrix, NOT the ordering in the list below 
+  f1_metrics = c("Delta_F1", "WT_F1", "Omi_F1", "Beta_F1")
+  f1s = unlist(averages[rownames(averages) %in% f1_metrics,])
+
+  # This will be the final dataframe that contains all the values
+  dabwise_performance = data.frame("dAb" = ordered_list_of_dabs)
+  
+  # Eventually will cbind this dataframe to the dabwise performance
+  temp_f1_df = data.frame(matrix(nrow = 1, ncol = 4))
+  colnames(temp_f1_df) = rownames(averages)[rownames(averages) %>% str_detect("F1")] 
+  
+  # Obtain the first 4 values, these are the associated vals from the matrix corresponding to the first dAb
+  for (val in 1:length(ordered_list_of_dabs)){
+    start_ind = 1 + length(f1_metrics)*(val-1)
+    temp_metrics = f1s[start_ind:(start_ind+4)]
+    temp_f1_df = rbind(temp_f1_df, temp_metrics)
+  }
+  temp_f1_df = na.omit(temp_f1_df)
+  temp_perf_metrics = cbind(Accuracy, Kappa, temp_f1_df) %>% signif(digits=3)
+  
+  dabwise_performance = cbind(dabwise_performance, temp_perf_metrics)
+
+  # Might add standard deviations later but for now Im leaving it out because it's a huge pain in the ass
+  return(dabwise_performance)
+}
+
+
+# MULTI_PERFORMANCE_VIZ -> USED TO OBTAIN PERFORMANCE METRICS FROM A LIST OF RESULTS
+# THE LIST OF RESULTS SHOULD FOLLOW THE SAME FORM AS THOSE PRODUCED IN GLM_CV FUNCTIONS
+# HANDLES PLOTTING BUT CALLS THE EXTRACT_PERFORMANCE_METRICS FUNCTION TO ACTUALLY OBTAIN VALUES TO PLOT
+multi_performance_viz = function(list_of_results, ordered_list_of_dabs, object_to_obtain = 'performance_metrics'){
+  
+  # Obtaining performance metrics
+  perf_metrics = extract_performance_metrics(list_of_results, ordered_list_of_dabs, object_to_obtain)
+  long_performance_metrics = perf_metrics %>% pivot_longer(cols = -dAb, names_to = 'metric')
+  
+  # I want bar graphs with grouped cols for each dab and all dabs on a single graph organized by greatest kappa
+  col_plot = ggplot(long_performance_metrics, aes(x=dAb, y=value, fill = metric)) + 
+    geom_bar(stat = "identity", position = "dodge")+
+    scale_fill_brewer(palette = 'Dark2')
+  print(col_plot)
+  
+  col_plot_2 = ggplot(long_performance_metrics, aes(x=metric, y=value, fill = metric))+
+    geom_bar(stat="identity")+
+    geom_text(aes(label=value, y=value, vjust = 2))+
+    scale_fill_brewer(palette = 'Dark2', type = "qual")+
+    facet_wrap(~dAb)
+    
+  print(col_plot_2)
+  # I want the top N cAbs from each dab
+}
+
+
+# GLM PERFROMANCE FUNCTION
+# Used in GLM_FS function to obtain performance metrics based on model predictions
+get_glm_performance = function(predictions, y_test){
+  if(length(levels(predictions)) == length(levels(y_test))){
+    conf_matrix = confusionMatrix(y_test, predictions, mode = 'everything')
+    
+    Delta_F1 = conf_matrix$byClass[,'F1']['Class: Delta'][[1]]
+    Omi_F1 = conf_matrix$byClass[,'F1']['Class: Omicron'][[1]]
+    WT_F1 = conf_matrix$byClass[,'F1']['Class: WT'][[1]]
+    Beta_F1 = conf_matrix$byClass[,'F1']['Class: Beta'][[1]]
+      
+    perf_metrics = data.frame("accuracy" = conf_matrix$overall[[1]],
+                                  "kappa" = conf_matrix$overall[[2]],
+                                  "Delta_F1" = Delta_F1,
+                                  "Omi_F1" = Omi_F1,
+                                  "WT_F1" = WT_F1,
+                                  "Beta_F1" = Beta_F1,
+                                  "Average_f1" = mean(c(Delta_F1, Omi_F1, WT_F1, Beta_F1), na.rm = T))
+    return(list("perf_metrics" = perf_metrics,
+                "conf_matrix" = conf_matrix))
+  }
+  else{
+    reference = y_test
+    conf_matrix = CrossTable(predictions,
+                             y_test,
+                             prop.chisq = F)
+    table = conf_matrix$t
+    
+    # Convert table to df to make it easier to work with
+    N = length(reference)
+    tab_df = as.data.frame(table) %>% mutate_if(is.factor, as.character)
+    
+    # Accuracy is the sum of when the x and y are the same divided by the total
+    accuracy = sum(tab_df$Freq[tab_df$x==tab_df$y]) / N
+    
+    # kappa is 
+    # po is the accuracy of the model
+    po = sum(tab_df$Freq[tab_df$x==tab_df$y])/sum(tab_df$Freq)
+    
+    # pe is the agreement between the probabilities of each class based on the reference and the predicted
+    true_beta_percent = sum(tab_df$Freq[tab_df$y=='Beta']) / N
+    pred_beta_percent = sum(tab_df$Freq[tab_df$x=='Beta']) / N 
+    
+    true_omicron_percent = sum(tab_df$Freq[tab_df$y=='Omicron']) / N 
+    pred_omicron_percent = sum(tab_df$Freq[tab_df$x=='Omicron']) / N 
+    
+    true_delta_percent = sum(tab_df$Freq[tab_df$y=='Delta']) / N 
+    pred_delta_percent = sum(tab_df$Freq[tab_df$x=='Delta']) / N 
+    
+    true_wt_percent = sum(tab_df$Freq[tab_df$y=='WT']) / N 
+    pred_wt_percent = sum(tab_df$Freq[tab_df$x=='WT']) / N 
+    
+    pe = ((true_beta_percent * pred_beta_percent) / N^2) +
+         ((true_omicron_percent * pred_omicron_percent) / N^2) + 
+         ((true_delta_percent * pred_delta_percent) / N^2) +
+         ((true_wt_percent * pred_wt_percent) / N^2)
+    
+    kap = (po - pe)/(1 - pe)
+    
+    perf_metrics = data.frame("accuracy" = accuracy,
+                                  "kappa" = kap,
+                                  "Delta_F1" = NA,
+                                  "Omi_F1" = NA,
+                                  "WT_F1" = NA,
+                                  "Beta_F1" = NA,
+                                  "Average_f1" = NA)
+    
+    return(list("perf_metrics" = perf_metrics,
+                "conf_matrix" = table))
+  }
+}
+```
+
+```{r GLM_FS ACCESSORY FUNCTION TESTING}
+# THIS IS AN ARTIFACT LEFT OVER FROM WHEN I WAS TESTING SOME ACCESSORY FUNCTIONS
+# REQUIRES SPLIT_POTENTIAL_PAIR_DF TO BE IN THE GLOBAL ENV (CREATED IN S_PROTEIN_SCREEN_VISUALIZATION)
+# Contains dabs5, 6, 8, 17, 18, 19, 20, 25
+preselect_results_no_thresh = model_call_loop(split_potential_pair_df, "lasso_no_fs")
+get_cv_coefs(preselect_results_no_thresh[[6]]$optimal_model_list, plot = T)
+
+# There's nothing about the output of model_call_loop that gives you the dAb names. Maybe they could be extracted from get_cv_coefs but it's easier
+# for now to just create a list of them
+potential_pair_dab_list = c("dAb5", "dAb6", "dAb8", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
+
+multi_performance_viz(preselect_results_no_thresh, potential_pair_dab_list)
+```
+
+```{r BASE GLM}
+# GLMs with moving thresholds but no feature selection
+# most recent change: Shifted scaling from threshold_df assignment to each resampling loop to allow for the inclusion of complex transformations
+# namel yeo-johnson
+glm_no_fs = function(df, target, k1, num_repeats, threshold, alpha_value){
+  perf_df = NULL
+  conf_table_list = NULL
+  opt_model_list = list()
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+                  select(-c(Conc., Replicates)) %>%
+                  mutate_if(is.numeric, scale)
+  
+  for(rep in 1:num_repeats){
+    
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    conf_table_ind = 1+(5*(rep-1))
+    
+    
+    for (fold1 in 1:k1){
+      global_train = threshold_df[-global_kfold[[fold1]],]
+      global_test = threshold_df[global_kfold[[fold1]],]
+    
+    
+      # Create model matrix -- .-1 term removes the intercept 
+      model_matrix_formula = paste(target, '~', '.-1') %>% as.formula()
+      
+      x_global_test_matrix = model.matrix(model_matrix_formula, global_test)
+      y_global_test = global_test[[target]]
+      
+      x_global_train_matrix = model.matrix(model_matrix_formula, global_train)
+      y_global_train = global_train[[target]]
+        
+      # Create initial models
+      # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
+      # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
+      # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+      internal_model = cv.glmnet(x_global_train_matrix, y_global_train, 
+                                 family = "multinomial",
+                                 alpha = alpha_value,
+                                 type.multinomial = 'grouped',
+                                 nfolds = 5,
+                                 type.measure = 'class',
+                                 intercept = F,
+                                 parallel = T)
+      
+      opt_lasso_predict = predict(internal_model, s = internal_model$lambda.1se,
+                                  newx = x_global_test_matrix,
+                                  type = 'class')
+      opt_lasso_predict = as.factor(opt_lasso_predict)
+      
+      if (length(levels(opt_lasso_predict)) == length(levels(y_global_test))){
+        conf_matrix = confusionMatrix(y_global_test, opt_lasso_predict, mode = 'everything')
+        # recording performance metrics of each train test split
+        Delta_F1 = conf_matrix$byClass[,'F1']['Class: Delta'][[1]]
+        Omi_F1 = conf_matrix$byClass[,'F1']['Class: Omicron'][[1]]
+        WT_F1 = conf_matrix$byClass[,'F1']['Class: WT'][[1]]
+        Beta_F1 = conf_matrix$byClass[,'F1']['Class: Beta'][[1]]
+        
+        perf_metrics = data.frame("iteration" = conf_table_ind,
+                                  "accuracy" = conf_matrix$overall[[1]],
+                                  "kappa" = conf_matrix$overall[[2]],
+                                  "Delta_F1" = Delta_F1,
+                                  "Omi_F1" = Omi_F1,
+                                  "WT_F1" = WT_F1,
+                                  "Beta_F1" = Beta_F1,
+                                  "Average_f1" = mean(c(Delta_F1, Omi_F1, WT_F1, Beta_F1), na.rm = T))
+        
+        if(is.null(perf_df)){
+          perf_df = perf_metrics
+        }
+        else{
+          perf_df = rbind(perf_df, perf_metrics)
+        }
+        
+        # recording actual confusion tables
+        table = conf_matrix$table
+        conf_table_list[[conf_table_ind]] = table
+      }
+      
+      else{
+        print("Basic confusion matrix used:")
+        predicted = opt_lasso_predict
+        reference = y_global_test
+        conf_matrix = CrossTable(predicted,
+                                 reference,
+                                 prop.chisq = F)
+        table = conf_matrix$t
+        conf_table_list[[conf_table_ind]] = table
+      }
+      # Recording optimal models
+      opt_model = internal_model
+      opt_model_list[[conf_table_ind]] = opt_model
+      
+      
+      
+      conf_table_ind = conf_table_ind+1
+    }
+  }
+  # if anyone besides me is seeing this then please don't judge this joke of a fix. I need this array to be numeric, but I also need to pad it by 
+  # one value at the start, otherwise, without a value for the iteration column, the values wrap around the df index. I'll never encounter 1000 in normal
+  # operation, so it'll never result in a repeat value in the iteration column before it's immediately overwritten
+  stdevs = c(1000, sapply(perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
+  avgs = c(1000, sapply(perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
+  
+  perf_df = rbind(perf_df, avgs = avgs, stdevs = stdevs)
+  perf_df$iteration[nrow(perf_df)-1] = "Averages"
+  perf_df$iteration[nrow(perf_df)] = "Standard_devations"
+  return(list("performance_metrics" = perf_df, 
+                  "confusion_matrices" = conf_table_list,
+                  "optimal_model_list" = opt_model_list))
+}
+
+
+cl = makeCluster(6)
+registerDoParallel(cl)
+
+glm_test_df = split_dabs[[3]]
+dab_name = "dAb20"
+
+no_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 0, 1)
+low_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 0.1, 1)
+mid_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 0.8, 1)
+strict_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 1, 1)
+class(no_thresh_base_glm$confusion_matrices[[2]])
+
+stopCluster(cl)
+registerDoSEQ()
+
+low_thresh_base_glm$performance_metrics
+# Exporting confusion matrices to a csv
+# capture.output(no_thresh_base_glm$confusion_matrices, file = paste(dab_name, "no_thresh_conf_matrix.txt", sep="_"))
+# capture.output(low_thresh_base_glm$confusion_matrices, file = paste(dab_name, "low_thresh_conf_matrix.txt", sep="_"))
+# capture.output(mid_thresh_base_glm$confusion_matrices, file = paste(dab_name, "mid_thresh_conf_matrix.txt", sep="_"))
+# capture.output(strict_thresh_base_glm$confusion_matrices, file = paste(dab_name, "strict_thresh_conf_matrix.txt", sep="_"))
+
+# Exporting performance metrics to a excel workbook
+# wb = createWorkbook()
+# 
+# addWorksheet(wb, "No threshold")
+# addWorksheet(wb, "Low threshold")
+# addWorksheet(wb, "Mid threshold")
+# addWorksheet(wb, "Strict threshold")
+# 
+# writeData(wb, 1, no_thresh_base_glm$performance_metrics)
+# writeData(wb, 2, low_thresh_base_glm$performance_metrics)
+# writeData(wb, 3, mid_thresh_base_glm$performance_metrics)
+# writeData(wb, 4, strict_thresh_base_glm$performance_metrics)
+
+# saveWorkbook(wb, paste(dab_name, "no_fs_lasso_performance.xlsx", sep="_"))
+
+# Obtains coefficients from lists of models, averages them, then plots them
+no_thresh_coef = get_cv_coefs(no_thresh_base_glm$optimal_model_list, plot = T)
+low_thresh_coef = get_cv_coefs(low_thresh_base_glm$optimal_model_list, plot = T)
+mid_thresh_coef = get_cv_coefs(mid_thresh_base_glm$optimal_model_list, plot = T)
+strict_thresh_coef = get_cv_coefs(strict_thresh_base_glm$optimal_model_list, plot = T)
+
+# # Saves the coefficients plots as PNGs
+# ggsave(paste(dab_name, 'no_threshold_no_fs_glm_coefs.png', sep="_"), no_thresh_coef$coef_plot, dpi = 320, width = 10)
+# ggsave(paste(dab_name, 'low_threshold_no_fs_glm_coefs.png', sep="_"), low_thresh_coef$coef_plot, dpi = 320, width = 10)
+# ggsave(paste(dab_name, 'mid_threshold_no_fs_glm_coefs.png', sep="_"), mid_thresh_coef$coef_plot, dpi = 320, width = 10)
+# ggsave(paste(dab_name, 'strict_threshold_no_fs_glm_coefs.png', sep="_"), strict_thresh_coef$coef_plot, dpi = 320, width = 10)
+
+```
+
+```{r GLM CV WITH FS, warning=FALSE}
+# GLMs with moving thresholds AND feature selection 
+glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
+                     n_top_features){
+  # I GUARANTEE THAT THE INDEX VAR IS GOING TO BE FUCKED UP AND WILL TAKE ME HOURS TO FIX LMAO
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = NULL
+  global_conf_table_list = NULL
+  
+  external_opt_model_list = list()
+  global_model_list = list()
+  
+  global_opt_model_list = list()
+  average_coef_plot_list = list()
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+                  select(-c(Conc., Replicates)) %>%
+                  mutate_if(is.numeric, scale)
+  
+  for(rep in 1:num_repeats){
+  global_kfold = createFolds(threshold_df[[target]], k = k1)
+  
+  # NEED TO FIX THESE INDEXERS
+  # conf_table_ind = 1+(5*(rep-1))
+    
+  # indices for when I reinstate the num_repeats loop
+  global_ind= 1 + (5 * (rep - 1))
+  external_ind = 1 + (k1 * k2 * (rep-1))
+  
+    for (fold1 in 1:k1){
+      global_train = threshold_df[-global_kfold[[fold1]],]
+      global_test = threshold_df[global_kfold[[fold1]],]
+    
+      external_kfold = createFolds(global_train[[target]], k = k2)
+      # external_ind = 1+(5*(fold1-1))
+      
+      for (fold2 in 1:k2){
+        external_train = global_train[-external_kfold[[fold2]],]
+        external_test = global_train[external_kfold[[fold2]],]
+        
+        # Create model matrix -- .-1 term removes the intercept 
+        model_matrix_formula = paste(target, '~', '.-1') %>% as.formula()
+        
+        x_external_test_matrix = model.matrix(model_matrix_formula, external_test)
+        y_external_test = external_test[[target]]
+        
+        x_external_train_matrix = model.matrix(model_matrix_formula, external_train)
+        y_external_train = external_train[[target]]
+        
+        # Create initial models
+        # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
+        # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
+        # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+        external_model = cv.glmnet(x_external_train_matrix, y_external_train, 
+                                   family = "multinomial",
+                                   alpha = alpha_value,
+                                   type.multinomial = 'grouped',
+                                   nfolds = 5, # nrow(external_train),
+                                   type.measure = 'class',
+                                   intercept = F,
+                                   parallel = T)
+        
+        opt_lasso_predict = predict(external_model, s = external_model$lambda.1se,
+                                  newx = x_external_test_matrix,
+                                  type = 'class')
+        opt_lasso_predict = as.factor(opt_lasso_predict)
+        perf_call = get_glm_performance(opt_lasso_predict, y_external_test)
+        external_perf_metrics = cbind(iteration = external_ind, perf_call$perf_metrics)
+        external_conf_matrix = perf_call$conf_matrix
+        
+        if(is.null(external_perf_df)){
+          external_perf_df = external_perf_metrics
+        }
+        else{
+          external_perf_df = rbind(external_perf_df, external_perf_metrics)
+        }
+        external_conf_table_list[[external_ind]] = external_conf_matrix
+        external_opt_model_list[[external_ind]] = external_model
+        external_ind = external_ind+1
+      }
+      # Now that the external cv is completed and I have a full list of models, I need
+      # to find the average coefficients, then downselect the global training set with them
+      coefs_call = get_cv_coefs(external_opt_model_list, plot = T)
+      average_coef_plot_list[[global_ind]] = coefs_call$coef_plot
+      average_external_coefs = coefs_call$coef_df
+      
+      average_abs_external_coefs = average_external_coefs %>% mutate_if(is.numeric, abs)
+      
+      num_features = n_top_features
+  
+      sorted_coefs = average_abs_external_coefs %>% select_if(is.numeric) %>% 
+                      mutate(sum = rowSums(.)) %>% 
+                      mutate('Pair' = average_abs_external_coefs$Pair) %>% 
+                      arrange(desc(sum))
+      
+      best_features = sorted_coefs$Pair[1:num_features]
+      global_train = cbind(global_train[[target]], global_train[best_features])
+      colnames(global_train)[1] = target
+      
+      global_test = cbind(global_test[[target]], global_test[best_features])
+      print("global training data")
+      print(global_train)
+      colnames(global_test)[1] = target
+      
+      # Create global model matrices
+      global_matrix_formula = paste(target, '~', '.-1') %>% as.formula()
+      
+      x_global_test_matrix = model.matrix(global_matrix_formula, global_test)
+      y_global_test = global_test[[target]]
+  
+      
+      x_global_train_matrix = model.matrix(global_matrix_formula, global_train)
+      y_global_train = global_train[[target]]
+  
+  
+      global_model = cv.glmnet(x_global_train_matrix, y_global_train,
+                               family = 'multinomial',
+                               type.multinomial = 'grouped',
+                               type.measure = 'deviance',
+                               nfold = 5,
+                               parallel = T,
+                               alpha = 1,
+                               intercept = F)
+      
+      global_model_list[fold1] = global_model
+      
+      global_predict = predict(global_model, newx = x_global_test_matrix,
+                               type = 'class',
+                               s = global_model$lambda.1se)
+      
+      global_predict = as.factor(global_predict)
+      global_perf_call = get_glm_performance(global_predict, y_global_test)
+      global_perf_metrics = cbind(iteration = global_ind, global_perf_call$perf_metrics)
+      global_conf_matrix = global_perf_call$conf_matrix
+      
+      if(is.null(global_perf_df)){
+        global_perf_df = global_perf_metrics
+      }
+      
+      else{
+        global_perf_df = rbind(global_perf_df, global_perf_metrics)
+      }
+      
+      global_conf_table_list[[global_ind]] = global_conf_matrix
+      global_opt_model_list[[global_ind]] = global_model
+      global_ind = global_ind+1
+    
+    # Averaging the performance based on the recorded metrics of the external k-fold cv
+    # I have this mob deep in the function because I'll eventually have an external number
+    # of repeats, and this averaging needs to be when the last repeat concludes
+  
+    }
+  }
+  external_stdevs = c(1000, sapply(external_perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
+  external_avgs = c(1000, sapply(external_perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
+  external_perf_df = rbind(external_perf_df, avgs = external_avgs, stdevs = external_stdevs)
+  external_perf_df$iteration[nrow(external_perf_df)-1] = "Averages"
+  external_perf_df$iteration[nrow(external_perf_df)] = "Standard_devations"
+  
+  global_stdevs = c(1000, sapply(global_perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
+  global_avgs = c(1000, sapply(global_perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
+  global_perf_df = rbind(global_perf_df, avgs = global_avgs, stdevs = global_stdevs)
+  global_perf_df$iteration[nrow(global_perf_df)-1] = "Averages"
+  global_perf_df$iteration[nrow(global_perf_df)] = "Standard_devations"
+  
+  return(list("external_performance_metrics" = external_perf_df, 
+                  "external_confusion_matrices" = external_conf_table_list,
+                  "external_model_list" = external_opt_model_list,
+                  "global_performance_metrics" = global_perf_df,
+                  "global_confusion_matrices" = global_conf_table_list,
+                  "global_model_list" = global_opt_model_list,
+                  "best_features" = sorted_coefs))
+}
+
+cl = makeCluster(6)
+registerDoParallel(cl)
+
+glm_test_df = split_potential_pair_df[[3]]
+
+# I know that there are 8 dAbs for the dAb6 df. Let's test the performance of 5 features
+# CURENTLY WORKING BUT SOME WONKY STUFF WITH THE INDEXING OF THE RECORDED PERFORMANCE AND I STILL NEED TO AVERAGE THE GLOBAL PERFORMANCES
+no_thresh_fs_glm = glm_fs(df = glm_test_df, 
+                               target = "target_vector", 
+                               k1 = 5, 
+                               k2 = 5, 
+                               num_repeats = 3, 
+                               threshold = 0,
+                               alpha_value = 1,
+                               n_top_features = 5)
+
+# sapply(no_thresh_fs_glm$global_performance_metrics[1:75,] %>% dplyr::select(-iteration), mean, na.rm = T)
+get_cv_coefs(fs_lasso[[1]]$global_model_list)
+multi_performance_viz(fs_lasso, potential_pair_dab_list, object_to_obtain = "global_performance_metrics")
+no_thresh_fs_glm$global_performance_metrics
+stopCluster(cl)
+registerDoSEQ()
+```
+
+```{r MODEL LOOP, warning=FALSE}
+# Builds models and tests performance
+model_call_loop = function(df_list, model_type, k1=5, num_repeats=5, threshold=0, alpha_value = 1, k2 = 5, n_top_features = 10){
+  # Currently supports model types
+  result_list = rep(NULL, length(df_list))
+  
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
+  result_ind = 1
+  
+  if (model_type == "lasso_no_fs"){
+    for (df in df_list){
+      result_list[[result_ind]] = glm_no_fs(df, "target_vector", k1, num_repeats, threshold = 0, alpha_value = 1)
+      result_ind = result_ind + 1
+    }
+  }
+  else if (model_type == "lasso_fs"){
+    for(df in df_list){
+      print(result_ind)
+      result_list[[result_ind]] = glm_fs(df = df,
+                                         target = 'target_vector',
+                                         k1, k2, num_repeats,
+                                         threshold, alpha_value,
+                                         n_top_features = n_top_features)
+      result_ind = result_ind+1
+    }
+  }
+  stopCluster(cl)
+  registerDoSEQ()
+  return(result_list)
+}
+
+
+fs_lasso = model_call_loop(split_potential_pair_df, "lasso_fs", n_top_features = 3)
+for (ind in c(1:8)){
+  plot = get_cv_coefs(fs_lasso[[ind]]$global_model_list)
+  print(plot)
+}
+fs_lasso[[3]]$global_model_list
+# fs_lasso[[1]]$best_features
+multi_performance_viz(fs_lasso, potential_pair_dab_list, object_to_obtain = "global_performance_metrics")
+```
+
+```{r FEATURE SELECTION PERFORMANCE BY NUM_FEATURES}
+# Define model list that you want to iterate over 
+split_potential_pair_df
+
+
+
+# Global resample function (basically the master function)
+global_resample = function(df, target = "target_vector", global_folds=5, external_folds=5, num_repeats = 5, threshold = 0, n_top_feature_list = 20,
+                           preprocess = c("center, scale")){
+  # Iteration needs to be left in metrics, but others can be changed as long as the downstram array of performance metrics is adapted to match
+  metrics = c("Iteration", "Accuracy", "Kappa", "Delta_F1", "Omi_F1", "WT_F1", "Beta_F1", "Average_F1")
+  global_perf_df = data.frame(matrix(ncol = length(metrics), nrow = (global_folds * num_repeats) ))
+  colnames(global_perf_df) = metrics
+  
+  global_model_list = list()
+  global_confusion_matrix_list = list()
+  
+  global_df = df %>% filter(Conc. > threshold) %>%
+    select(-c(Conc., replicates))
+  
+  # Repeat entire procedure for the specified number of repeats
+  for(rep in 1:num_repeats){
+    global_kfolds = createFolds(global_df[[target]], k = global_folds)
+    
+    # Loop through each global fold
+    
+    for (global_fold in 1:global_folds){
+      global_train = global_df[-global_kfolds[[global_fold]],]
+      global_test = global_df[global_kfolds[[global_fold]],]
+      
+      # Spits out dfs of performance and confusion matrices that are num_folds long 
+      external_resample_call = external_resample(external_df = global_train,
+                                                 num_folds = external_folds,
+                                                 preprocess = preprocess)
+      
+      if(rep == 1){
+        external_performance = 
+      }
+      
+    }
+    # After every external resample call is done, then we can use that data to identify best performaing 
+  }
+}
+
+global_resample()
+# External resample function (Input is some of the inputs to the master function but also the train test split)
+  # - output is a list of external models, external performance
+external_resample = function(split_dfs, target = "target_vector", preprocess, num_folds = 5){
+  external_perf_df = NULL
+  external_perf_temp = NULL
+  
+  external_model_list = list(1: (length(split_dfs) * num_folds) )
+  
+  split_index = 1
+  for (split in split_dfs){
+    external_data = split
+    
+    external_folds = createFolds(external_data[[target]], k = num_folds)
+    
+    for (fold in 1:num_folds){
+      
+      external_train = external_data[-external_folds[[fold]], ]
+      external_test = external_data[-external_folds[[fold]], ]
+      
+      external_preprocess = preProcess(external_train, method = preprocess)
+      external_train = predict(external_preprocess, external_train)
+      external_test = predict(external_preprocess, external_test)
+      
+      # Create model matrix -- .-1 term removes the intercept 
+      model_matrix_formula = paste(target, "~", ".-1") %>% as.formula()
+      
+      x_external_test_matrix = model.matrix(model_matrix_formula, external_test)
+      y_external_test = external_test[[target]]
+      
+      x_external_train_matrix = model.matrix(model_matrix_formula, external_train)
+      y_external_train = external_train[[target]]
+        
+  
+      # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
+      # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
+      # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+      external_model = cv.glmnet(x_external_train_matrix, y_external_train,
+                                 family = "multinomial",
+                                 alpha = 1,
+                                 type.multinomial = 'grouped',
+                                 nfolds = 5,
+                                 type.measure = 'class',
+                                 intercept = F,
+                                 parallel = T)
+      
+      opt_external_predict = predict(external_model, s = external_model$lambda.1se,
+                                     newx = x_external_test_matrix,
+                                     type = 'class')
+      
+      opt_external_predict = as.factor(opt_external_predict)
+      external_model_list[[fold + (5 * (split_index - 1)) ]] = external_model
+      # Calls get_glm_perfroamcne, which takes in a set of predictions and outputs accuracy, kappa, f1 for each class, and average f1
+      # This is necessary because in situations where a model hasnt preidcted any examples of one of the classes, caret confusionMatrix throws an error
+      # only a single row of the final df is produced
+      get_external_performance = get_glm_performance(opt_external_predict, y_external_test)
+      print(get_external_performance$perf_metrics)
+      
+      
+      if(is.null(external_perf_temp)){
+        external_perf_temp = get_external_performance$perf_metrics
+      }
+      
+      else{
+        external_perf_temp[fold,] = get_external_performance$perf_metrics
+      }
+    }
+    
+    
+    if(is.null(external_perf_df)){
+      external_perf_df = external_perf_temp
+    }
+    else{
+      external_perf_df = rbind(external_perf_df, external_perf_temp)
+    }
+    
+    
+    split_index = split_index + 1
+  }
+
+  return(list("external_performance" = external_perf_df,
+              "external_models" = external_model_list))
+}
+
+ext_test = external_resample(lfold_test, preprocess = c("center", "scale"))
+ext_test$external_performance
+ext_test$external_models
+
+
+fold_test_df = split_potential_pair_df[[6]] %>% select(-c(Conc., Replicates))
+
+test_folds = createFolds(fold_test_df[['target_vector']], k = 5)
+
+fold_df_list = list()
+for (fold in 1:length(test_folds)){
+  trainer = fold_test_df[-test_folds[[fold]], ]
+  tester = fold_test_df[test_folds[[fold]], ]
+  
+  fold_df_list[[fold]] = list(trainer, tester) 
+}
+
+lfold_test = lapply(fold_df_list, function(x) x[[1]])
+
+# global_num_features test (takes in num_features arg, global train test split, and external model list (to determine best pairs) from the external resample function)
+  # spits out global performance, global models, global confusion matrices
+
+
+# Global resample functions output: external performance, external models, global performance, global models, best pairs
+```
+
+```{r GLM_NO_FS W/ CONCENTRATION COLUMN}
+# CONCENTRATION DOES NOT SIGNIFICANTLY IMPACT THE MAJORITY OF MODELS
+# I THINK THAT CONC WILL HAVE A BIGGER INFLUENCE ON TREE BASED MODELS
+glm_no_fs_conc = function(df, target, k1, num_repeats, threshold, alpha_value){
+  perf_df = NULL
+  conf_table_list = NULL
+  opt_model_list = list()
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+                  select(-c(Replicates)) %>%
+                  mutate_if(is.numeric, scale)
+  
+  for(rep in 1:num_repeats){
+    
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    conf_table_ind = 1+(5*(rep-1))
+    
+    
+    for (fold1 in 1:k1){
+      global_train = threshold_df[-global_kfold[[fold1]],]
+      global_test = threshold_df[global_kfold[[fold1]],]
+    
+    
+      # Create model matrix -- .-1 term removes the intercept 
+      model_matrix_formula = paste(target, '~', '.-1') %>% as.formula()
+      
+      x_global_test_matrix = model.matrix(model_matrix_formula, global_test)
+      y_global_test = global_test[[target]]
+      
+      x_global_train_matrix = model.matrix(model_matrix_formula, global_train)
+      y_global_train = global_train[[target]]
+        
+      # Create initial models
+      # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
+      # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
+      # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+      internal_model = cv.glmnet(x_global_train_matrix, y_global_train, 
+                                 family = "multinomial",
+                                 alpha = alpha_value,
+                                 type.multinomial = 'grouped',
+                                 nfolds = 5,
+                                 type.measure = 'class',
+                                 intercept = F,
+                                 parallel = T)
+      
+      opt_lasso_predict = predict(internal_model, s = internal_model$lambda.1se,
+                                  newx = x_global_test_matrix,
+                                  type = 'class')
+      opt_lasso_predict = as.factor(opt_lasso_predict)
+      
+      if (length(levels(opt_lasso_predict)) == length(levels(y_global_test))){
+        conf_matrix = confusionMatrix(y_global_test, opt_lasso_predict, mode = 'everything')
+        # recording performance metrics of each train test split
+        Delta_F1 = conf_matrix$byClass[,'F1']['Class: Delta'][[1]]
+        Omi_F1 = conf_matrix$byClass[,'F1']['Class: Omicron'][[1]]
+        WT_F1 = conf_matrix$byClass[,'F1']['Class: WT'][[1]]
+        Beta_F1 = conf_matrix$byClass[,'F1']['Class: Beta'][[1]]
+        
+        perf_metrics = data.frame("iteration" = conf_table_ind,
+                                  "accuracy" = conf_matrix$overall[[1]],
+                                  "kappa" = conf_matrix$overall[[2]],
+                                  "Delta_F1" = Delta_F1,
+                                  "Omi_F1" = Omi_F1,
+                                  "WT_F1" = WT_F1,
+                                  "Beta_F1" = Beta_F1,
+                                  "Average_f1" = mean(c(Delta_F1, Omi_F1, WT_F1, Beta_F1), na.rm = T))
+        
+        if(is.null(perf_df)){
+          perf_df = perf_metrics
+        }
+        else{
+          perf_df = rbind(perf_df, perf_metrics)
+        }
+        
+        # recording actual confusion tables
+        table = conf_matrix$table
+        conf_table_list[[conf_table_ind]] = table
+      }
+      
+      else{
+        print("Basic confusion matrix used:")
+        predicted = opt_lasso_predict
+        reference = y_global_test
+        conf_matrix = CrossTable(predicted,
+                                 reference,
+                                 prop.chisq = F)
+        table = conf_matrix$t
+        conf_table_list[[conf_table_ind]] = table
+      }
+      # Recording optimal models
+      opt_model = internal_model
+      opt_model_list[[conf_table_ind]] = opt_model
+      
+      
+      
+      conf_table_ind = conf_table_ind+1
+    }
+  }
+  # if anyone besides me is seeing this then please don't judge this joke of a fix. I need this array to be numeric, but I also need to pad it by 
+  # one value at the start, otherwise, without a value for the iteration column, the values wrap around the df index. I'll never encounter 1000 in normal
+  # operation, so it'll never result in a repeat value in the iteration column before it's immediately overwritten
+  stdevs = c(1000, sapply(perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
+  avgs = c(1000, sapply(perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
+  
+  perf_df = rbind(perf_df, avgs = avgs, stdevs = stdevs)
+  perf_df$iteration[nrow(perf_df)-1] = "Averages"
+  perf_df$iteration[nrow(perf_df)] = "Standard_devations"
+  return(list("performance_metrics" = perf_df, 
+                  "confusion_matrices" = conf_table_list,
+                  "optimal_model_list" = opt_model_list))
+}
+
+test_df = split_potential_pair_df[[8]]
+conc_test = glm_no_fs_conc(test_df, "target_vector", 5, 5, 0, 1)
+conc_test$performance_metrics
+get_cv_coefs(conc_test$optimal_model_list)
+
+```
+
+```{r GLM CV WITH FS AND BC transform, warning=FALSE}
+# ESSENTIALLY A COPY OF GLM_CV_FS WITH JUST THE CHANGELOG BELOW
+# GLMs with moving thresholds AND feature selection 
+# Changeglog: shifted scaling to the resampling loop
+glm_fs_temp = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
+                     n_top_features){
+  # I GUARANTEE THAT THE INDEX VAR IS GOING TO BE FUCKED UP AND WILL TAKE ME HOURS TO FIX LMAO
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = NULL
+  global_conf_table_list = NULL
+  
+  external_opt_model_list = list()
+  global_model_list = list()
+  
+  global_opt_model_list = list()
+  average_coef_plot_list = list()
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+                  select(-c(Conc., Replicates))
+  
+  for(rep in 1:num_repeats){
+  global_kfold = createFolds(threshold_df[[target]], k = k1)
+  
+  # NEED TO FIX THESE INDEXERS
+  # conf_table_ind = 1+(5*(rep-1))
+    
+  # indices for when I reinstate the num_repeats loop
+  global_ind= 1 + (5 * (rep - 1))
+  external_ind = 1 + (k1 * k2 * (rep-1))
+  
+    for (fold1 in 1:k1){
+      global_train = threshold_df[-global_kfold[[fold1]],]
+      global_test = threshold_df[global_kfold[[fold1]],]
+    
+      external_kfold = createFolds(global_train[[target]], k = k2)
+      # external_ind = 1+(5*(fold1-1))
+      
+      for (fold2 in 1:k2){
+        external_train = global_train[-external_kfold[[fold2]],]
+        external_test = global_train[external_kfold[[fold2]],]
+
+        external_preprocess = preProcess(external_train, method = c("scale", "center", "BoxCox"))
+        external_train = predict(external_preprocess, external_train)
+        external_test = predict(external_preprocess, external_test)
+        
+        # Create model matrix -- .-1 term removes the intercept 
+        model_matrix_formula = paste(target, '~', '.-1') %>% as.formula()
+        
+        x_external_test_matrix = model.matrix(model_matrix_formula, external_test)
+        y_external_test = external_test[[target]]
+        
+        x_external_train_matrix = model.matrix(model_matrix_formula, external_train)
+        y_external_train = external_train[[target]]
+        
+        # Create initial models
+        # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
+        # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
+        # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+        external_model = cv.glmnet(x_external_train_matrix, y_external_train, 
+                                   family = "multinomial",
+                                   alpha = alpha_value,
+                                   type.multinomial = 'grouped',
+                                   nfolds = 5, # nrow(external_train),
+                                   type.measure = 'class',
+                                   intercept = F,
+                                   parallel = T)
+        
+        opt_lasso_predict = predict(external_model, s = external_model$lambda.1se,
+                                  newx = x_external_test_matrix,
+                                  type = 'class')
+        opt_lasso_predict = as.factor(opt_lasso_predict)
+        perf_call = get_glm_performance(opt_lasso_predict, y_external_test)
+        external_perf_metrics = cbind(iteration = external_ind, perf_call$perf_metrics)
+        external_conf_matrix = perf_call$conf_matrix
+        
+        if(is.null(external_perf_df)){
+          external_perf_df = external_perf_metrics
+        }
+        else{
+          external_perf_df = rbind(external_perf_df, external_perf_metrics)
+        }
+        external_conf_table_list[[external_ind]] = external_conf_matrix
+        external_opt_model_list[[external_ind]] = external_model
+        external_ind = external_ind+1
+      }
+      # Now that the external cv is completed and I have a full list of models, I need
+      # to find the average coefficients, then downselect the global training set with them
+      coefs_call = get_cv_coefs(external_opt_model_list, plot = T)
+      average_coef_plot_list[[global_ind]] = coefs_call$coef_plot
+      average_external_coefs = coefs_call$coef_df
+      
+      average_abs_external_coefs = average_external_coefs %>% mutate_if(is.numeric, abs)
+      
+      num_features = n_top_features
+  
+      sorted_coefs = average_abs_external_coefs %>% select_if(is.numeric) %>% 
+                      mutate(sum = rowSums(.)) %>% 
+                      mutate('Pair' = average_abs_external_coefs$Pair) %>% 
+                      arrange(desc(sum))
+      
+      best_features = sorted_coefs$Pair[1:num_features]
+      global_train = cbind(global_train[[target]], global_train[best_features])
+      colnames(global_train)[1] = target
+      
+      global_test = cbind(global_test[[target]], global_test[best_features])
+      colnames(global_test)[1] = target
+      
+      # Create global model matrices
+      global_preprocess = preProcess(global_train, method = c("scale", "center", "BoxCox"))
+      global_train = predict(global_preprocess, global_train)
+      global_test = predict(global_preprocess, global_test)
+        
+      global_matrix_formula = paste(target, '~', '.-1') %>% as.formula()
+      
+      x_global_test_matrix = model.matrix(global_matrix_formula, global_test)
+      y_global_test = global_test[[target]]
+  
+      
+      x_global_train_matrix = model.matrix(global_matrix_formula, global_train)
+      y_global_train = global_train[[target]]
+  
+  
+      global_model = cv.glmnet(x_global_train_matrix, y_global_train,
+                               family = 'multinomial',
+                               type.multinomial = 'grouped',
+                               type.measure = 'deviance',
+                               nfold = 5,
+                               parallel = T,
+                               alpha = 1,
+                               intercept = F)
+      
+      global_model_list[fold1] = global_model
+      
+      global_predict = predict(global_model, newx = x_global_test_matrix,
+                               type = 'class',
+                               s = global_model$lambda.1se)
+      
+      global_predict = as.factor(global_predict)
+      global_perf_call = get_glm_performance(global_predict, y_global_test)
+      global_perf_metrics = cbind(iteration = global_ind, global_perf_call$perf_metrics)
+      global_conf_matrix = global_perf_call$conf_matrix
+      
+      if(is.null(global_perf_df)){
+        global_perf_df = global_perf_metrics
+      }
+      
+      else{
+        global_perf_df = rbind(global_perf_df, global_perf_metrics)
+      }
+      
+      global_conf_table_list[[global_ind]] = global_conf_matrix
+      global_opt_model_list[[global_ind]] = global_model
+      global_ind = global_ind+1
+    
+    # Averaging the performance based on the recorded metrics of the external k-fold cv
+    # I have this mob deep in the function because I'll eventually have an external number
+    # of repeats, and this averaging needs to be when the last repeat concludes
+  
+    }
+  }
+  external_stdevs = c(1000, sapply(external_perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
+  external_avgs = c(1000, sapply(external_perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
+  external_perf_df = rbind(external_perf_df, avgs = external_avgs, stdevs = external_stdevs)
+  external_perf_df$iteration[nrow(external_perf_df)-1] = "Averages"
+  external_perf_df$iteration[nrow(external_perf_df)] = "Standard_devations"
+  
+  global_stdevs = c(1000, sapply(global_perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
+  global_avgs = c(1000, sapply(global_perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
+  global_perf_df = rbind(global_perf_df, avgs = global_avgs, stdevs = global_stdevs)
+  global_perf_df$iteration[nrow(global_perf_df)-1] = "Averages"
+  global_perf_df$iteration[nrow(global_perf_df)] = "Standard_devations"
+  
+  return(list("external_performance_metrics" = external_perf_df, 
+                  "external_confusion_matrices" = external_conf_table_list,
+                  "external_model_list" = external_opt_model_list,
+                  "global_performance_metrics" = global_perf_df,
+                  "global_confusion_matrices" = global_conf_table_list,
+                  "global_model_list" = global_opt_model_list,
+                  "best_features" = sorted_coefs))
+}
+
+# Comparing five runs of 8 features using dab18 df with bc and non-bc transform
+cl = makeCluster(6)
+registerDoParallel()
+
+bc_mod_test_df1 = split_potential_pair_df[[5]]
+bc_perf_list_dab18 = list(1:5)
+for (rep in 1:5){
+  bc_mod_test = glm_fs_temp(bc_mod_test_df1, target = 'target_vector', k1=5, k2=5,
+                          num_repeats = 5, threshold = 0, alpha = 1, n_top_features = 8)
+  bc_perf_list_dab18[[rep]] = bc_mod_test$global_performance_metrics 
+}
+
+perf_list_dab18 = list(1:5)
+for (rep in 1:5){
+  bc_mod_test = glm_fs(bc_mod_test_df1, target = 'target_vector', k1=5, k2=5,
+                          num_repeats = 5, threshold = 0, alpha = 1, n_top_features = 8)
+  perf_list_dab18[[rep]] = bc_mod_test$global_performance_metrics
+  
+}
+bc_perf_list_dab18
+perf_list_dab18
+# Comparing five runs of 8 features using dab19 df with bc and non-bc transform
+
+cl = makeCluster(6)
+registerDoParallel()
+
+bc_mod_test_df2 = split_potential_pair_df[[6]]
+bc_perf_list_dab19 = list(1:5)
+for (rep in 1:5){
+  bc_mod_test = glm_fs_temp(bc_mod_test_df2, target = 'target_vector', k1=5, k2=5,
+                          num_repeats = 5, threshold = 0, alpha = 1, n_top_features = 8)
+  bc_perf_list_dab19[[rep]] = bc_mod_test$global_performance_metrics
+  
+}
+
+
+perf_list_dab19 = list(1:5)
+for (rep in 1:5){
+  bc_mod_test = glm_fs(bc_mod_test_df2, target = 'target_vector', k1=5, k2=5,
+                          num_repeats = 5, threshold = 0, alpha = 1, n_top_features = 8)
+  perf_list_dab19[[rep]] = bc_mod_test$global_performance_metrics
+  
+}
+
+stopCluster(cl)
+registerDoSEQ()
+
+bc_perf_list_dab18
+perf_list_dab18
+
+bc_perf_list_dab19
+perf_list_dab19
+```

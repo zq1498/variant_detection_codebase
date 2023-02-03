@@ -1,0 +1,497 @@
+---
+title: "S_protein_screen_visualization"
+output: html_document
+date: "2022-11-19"
+---
+
+```{r}
+library(openxlsx)
+library(tidyverse)
+library(ggplot2)
+library(ggbeeswarm)
+library(psych)
+library(ggridges)
+library(ggmulti)
+library(RColorBrewer)
+library(corrplot)
+library(gridExtra)
+library(reshape2)
+library(caret)
+library(factoextra)
+library(scales)
+library(ggcorrplot)
+```
+
+```{r}
+source("C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+```
+
+
+```{r}
+visualization_path = "C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visualization_and_preprocessing/Data_viz"
+```
+
+```{r}
+# Create heat map of which pairs were selected from the dose response
+test_df = split_dabs[[1]]
+test_pair_names = colnames(test_df %>% select(-c("Conc.", "Replicates", "target_vector")))
+all_pair_names = colnames(screen_df %>% select(-c("Conc.", "Replicates", "target_vector")))
+
+# Extract dAb
+dAb_names = unique(sub("_.*","",test_pair_names))
+all_dab_names = unique(sub("_.*", "", all_pair_names))
+
+# Extract cAb list
+cAb_names = unique(sub("[^_]*","",test_pair_names)) %>% substring(first = 2)
+all_cab_names = unique(sub("[^_]*", "", all_pair_names)) %>% substring(first = 2)
+
+# Create binary matrix of pairs
+test_bool = ifelse(all_cab_names %in% cAb_names, 1, 0)
+
+bool_pair_matrix = function(cab_list, dab_list, df_list){
+
+  bool_matrix = data.frame("dAb" = dab_list)
+  cab_bool_mat = data.frame(matrix(nrow = 1, ncol = length(cab_list)))
+  colnames(cab_bool_mat) = cab_list
+
+  row_ind = 1
+  for (df in df_list){
+    df_pairs = colnames(df %>% select(-c("Conc.", "Replicates", "target_vector")))
+    cab_names = unique(sub("[^_]*","",df_pairs)) %>% substring(first = 2)
+    bool_arr = ifelse(cab_list %in% cab_names, 1, 0)
+    cab_bool_mat[row_ind,] = bool_arr
+    row_ind = row_ind + 1
+  }
+  bool_matrix = cbind(bool_matrix, cab_bool_mat)
+  bool_matrix = melt(bool_matrix)
+  return(bool_matrix)
+}
+
+pair_bool_matrix = bool_pair_matrix(all_cab_names, all_dab_names, split_dabs)
+
+# Create heatmap
+ab_pair_heatmap <- ggplot(pair_bool_matrix, aes(dAb, variable)) +                           # Create heatmap with ggplot2
+  geom_tile(aes(fill = value)) +
+  labs(title = "Antibody pair heatmap",
+       x = "Detection Antibody",
+       y = "Capture Antibody")+
+  scale_fill_gradient(low = 'pink', high = 'darkred')
+ab_pair_heatmap
+```
+
+```{r}
+# Bar chart for number of pairs used in each dataframe
+num_pairs = lengths(split_dabs)-3
+pair_nums = data.frame("dab" = all_dab_names, "num_pairs" = num_pairs)
+
+num_pair_plot = ggplot(pair_nums, aes(x=reorder(dab, num_pairs), y = num_pairs)) + 
+  geom_col(fill = '#F8766D', col = 'brown') +
+  labs(title = "Number of pairs showing dose response",
+       x = 'Detection antibody',
+       y = 'Number of pairs')+
+  geom_text(aes(label = num_pairs), vjust = -0.5)
+num_pair_plot
+```
+```{r}
+# Scatterplots
+line_df = split_dabs[[1]] %>% dplyr::select(-"Replicates")
+long_line_df = line_df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = 'cAbs')
+
+for (df in split_dabs){
+df = df %>% dplyr::select(-"Replicates")
+long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = 'cAbs')
+
+scatter = ggplot(long_df, aes(x=Conc., y=value, col = target_vector)) + 
+  geom_point()+
+  geom_smooth(alpha = 0.5)+
+  facet_wrap(~cAbs)+
+  labs(title = 'Dose response curves of downselected dataset',
+       y = 'Log(Fluorescence) (A.U.)',
+       x = 'Spike protein concentration (ng/ml)')+
+  scale_x_continuous(trans='log10',
+                     labels = label_log())
+
+print(scatter)
+}
+
+trans_test = split_potential_pair_df[[5]]
+yj_transform = preProcess(trans_test, method = "YeoJohnson")
+yj_train = predict(yj_transform, trans_test)
+
+bc_transform = preProcess(trans_test, method = "BoxCox")
+bc_train = predict(bc_transform, trans_test)
+
+exp_transform = preProcess(trans_test, method = "expoTrans")
+exp_train = predict(exp_transform, trans_test)
+
+trans_df_list = list(trans_test, yj_train, bc_train, exp_train)
+
+for (df in trans_df_list){
+df = df %>% dplyr::select(-"Replicates")
+long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = 'cAbs')
+
+scatter = ggplot(long_df, aes(x=Conc., y=value, col = target_vector)) + 
+  geom_point()+
+  geom_smooth(alpha = 0.5)+
+  facet_wrap(~cAbs)+
+  labs(title = 'Dose response curves of downselected dataset',
+       y = 'Log(Fluorescence) (A.U.)',
+       x = 'Spike protein concentration (ng/ml)')
+
+print(scatter)
+}
+
+
+bc_train_plot = bc_train %>% dplyr::select(-"Replicates")
+bc_long_df = bc_train_plot %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = 'cAbs')
+
+bc_scatter = ggplot(bc_long_df, aes(x=Conc., y=value, col = target_vector)) + 
+  geom_point()+
+  geom_smooth(alpha = 0.5)+
+  facet_wrap(~cAbs)+
+  labs(title = 'Dose response curves of downselected dataset (Box-Cox transform)',
+       y = 'Log(Fluorescence) (A.U.)',
+       x = 'Spike protein concentration (ng/ml)')
+
+print(bc_scatter)
+
+yj_train_plot = yj_train %>% dplyr::select(-"Replicates")
+yj_long_df = yj_train_plot %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = 'cAbs')
+
+yj_scatter = ggplot(yj_long_df, aes(x=Conc., y=value, col = target_vector)) + 
+  geom_point()+
+  geom_smooth(alpha = 0.5)+
+  facet_wrap(~cAbs)+
+  labs(title = 'Dose response curves of downselected dataset (Yeo-Johnson transform)',
+       y = 'Log(Fluorescence) (A.U.)',
+       x = 'Spike protein concentration (ng/ml)')
+
+print(yj_scatter)
+# Based on these plots, only dAb 5, 8, 16, 17, 18, 19 show at least one pair with dose response for every variant
+# potential_pairs = c("dAb5", "dAb8", "dAb16", "dAb17", "dAb18", "dAb19")
+# potential_pair_df = preselected_screen_df %>% dplyr::select(matches(potential_pairs))
+# potential_pair_df = cbind(preselected_screen_df[c("Conc.","Replicates","target_vector")], potential_pair_df)
+# split_potential_pair_df = split_dAb_dfs(potential_pair_df, c("Conc.","Replicates", "target_vector"))
+# 
+# # Contains the best performing pairs from the potentially overfit models
+# original_potential_pair = c("dAb5", 'dAb6', 'dAb13', 'dAb18', 'dAb19', 'dAb20')
+# original_potential_df = preselected_screen_df %>% dplyr::select(matches(original_potential_pair))
+# original_potential_df = cbind(preselected_screen_df[c("Conc.","Replicates","target_vector")], original_potential_df)
+# original_potential_pair_df = split_dAb_dfs(original_potential_df, c("Conc.","Replicates", "target_vector"))
+
+# Based on some rational selection criteria and domain knowledge, I can downselect my potential frames to dAb 5, 6, 8, 17, 18, 19, 20, 25
+potential_pairs = c("dAb5", "dAb6", "dAb8", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
+potential_pair_df = preselected_screen_df %>% dplyr::select(matches(potential_pairs))
+potential_pair_df = cbind(preselected_screen_df[c("Conc.","Replicates","target_vector")], potential_pair_df)
+split_potential_pair_df = split_dAb_dfs(potential_pair_df, c("Conc.","Replicates", "target_vector"))
+```
+
+```{r warning=FALSE}
+# More in depth data description of the most downselected df -- heat maps, beeswarms, violin plots, correlation matrices
+heat_map_list = list()
+heat_map_ind = 1
+for (df in split_potential_pair_df){
+  df = df %>% dplyr::select(-"Replicates") %>% mutate_if(is.numeric, round, digits = 4)
+  
+  dab_name = unique(sub("_.*", "", colnames(df %>% 
+                                              select(-c(Conc., target_vector)))
+                        ))
+  
+  cab_names = unique(sub("[^_]*", "", colnames(df[colnames(df) != c("Conc.", "target_vector")]))) %>% substring(first = 2)
+  colnames(df)[3:length(df)] = cab_names
+
+  long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = "cAbs", values_to = 'Fluorescence')
+  long_df$Conc. = as.factor(long_df$Conc.)
+
+  heat_map = ggplot(long_df, aes(x=cAbs, y=Conc., fill = Fluorescence)) +
+          geom_tile(color = 'white')+
+          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+          facet_wrap(~target_vector)+
+          labs(title = paste("Heatmap of fluorescence in", dab_name, "pairs", sep = " "))+
+          scale_fill_gradient(low = 'deepskyblue', high = 'black')
+  
+  heat_map_list[[heat_map_ind]] = heat_map
+  print(heat_map_list[[heat_map_ind]])
+}
+
+
+for (df in split_potential_pair_df){
+    df = df %>% dplyr::select(-"Replicates")
+    dab_name = unique(sub("_.*", "", colnames(df %>% 
+                                              select(-c(Conc., target_vector)))
+                    ))
+    cab_names = unique(sub("[^_]*", "", colnames(df[colnames(df) != c("Conc.", "target_vector")]))) %>% substring(first = 2)
+    colnames(df)[3:length(df)] = cab_names
+    
+    long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = "cAbs")
+    long_df$Conc. = as.factor(long_df$Conc.)
+    beeswarm = ggplot(long_df, aes(x=cAbs, y=value, color = target_vector)) +
+            geom_beeswarm(cex=0.5)+
+            labs(title = paste(dab_name, "pairs - fluorescence distribution by variant", sep = " "),
+                 x = "Variant",
+                 y = "Fluorescence (A.U.)",
+                 color = 'Variant')+
+            theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+    ggsave(file = paste(dab_name, "fluorescence_beeswarm_plot.png", sep="_"), beeswarm, dpi = 320, width = 10)
+    print(beeswarm)
+}
+
+# for (df in split_potential_pair_df){
+#     df = df %>% dplyr::select(-"Replicates")
+#     dab_name = unique(sub("_.*", "", colnames(df %>% 
+#                                               select(-c(Conc., target_vector)))
+#                     ))
+#     cab_names = unique(sub("[^_]*", "", colnames(df[colnames(df) != c("Conc.", "target_vector")]))) %>% substring(first = 2)
+#     colnames(df)[3:length(df)] = cab_names
+#     
+#     long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = "cAbs")
+#     long_df$Conc. = as.factor(long_df$Conc.)
+#     beeswarm = ggplot(long_df, aes(x=target_vector, y=value, color = c)) +
+#             geom_beeswarm()+
+#             labs(title = paste(dab_name, "pairs - fluorescence distribution by variant", sep = " "),
+#                  x = "Variant",
+#                  y = "Fluorescence (A.U.)")
+#     # ggsave(file = paste(dab_name, "fluorescence_beeswarm_plot.png", sep="_"), violin, dpi = 320, width = 10)
+#     print(beeswarm)
+# }
+
+
+
+for (df in split_potential_pair_df){
+    df = df %>% dplyr::select(-"Replicates")
+    dab_name = unique(sub("_.*", "", colnames(df %>% 
+                                              select(-c(Conc., target_vector)))
+                    ))
+    cab_names = unique(sub("[^_]*", "", colnames(df[colnames(df) != c("Conc.", "target_vector")]))) %>% substring(first = 2)
+    colnames(df)[3:length(df)] = cab_names
+    long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = "cAbs")
+    long_df$Conc. = as.factor(long_df$Conc.)
+    violin = ggplot(long_df, aes(x=target_vector, y=value)) +
+            geom_violin()+
+            facet_wrap(~cAbs)+
+      labs(title = paste(dab_name, "pairs - fluorescence distribution by variant", sep = " "),
+           x = "Capture Antibody",
+           y = "Fluorescence (A.U.)")
+    ggsave(file = paste(dab_name, "fluorescence_violin_plot.png", sep="_"), violin, dpi = 320, width = 10)
+    print(violin)
+}
+
+for (df in split_potential_pair_df){
+    df = df %>% dplyr::select(-"Replicates")
+    long_df = df %>% pivot_longer(cols = -c(target_vector, Conc.), names_to = "cAbs")
+    long_df$Conc. = as.factor(long_df$Conc.)
+    violin = ggplot(long_df, aes(x=cAbs, y=value)) +
+            geom_violin()+
+            facet_wrap(~target_vector, ncol = 1)
+    print(violin)
+}
+
+for (df in split_potential_pair_df){
+  df = df %>% dplyr::select_if(is.numeric) %>% dplyr::select(-Conc.)
+  dab_name = unique(sub("_.*", "", colnames(df)))
+  
+  cab_names = unique(sub("[^_]*", "", colnames(df[colnames(df) != c("Conc.", "target_vector")]))) %>% substring(first = 2)
+  colnames(df) = cab_names
+    
+  cor = cor(df)
+  corrplot = corrplot(cor, method = 'color', order = 'FPC')
+  print(corrplot)
+}
+
+# Correlation matrices with ggplot
+for (df in split_potential_pair_df){
+  within_variant_corr = list()
+  variant_ind = 1
+  for(var in unique(df$target_vector)){
+    temp_df = df %>% filter(target_vector == var) %>% dplyr::select_if(is.numeric) %>% dplyr::select(-Conc.)
+    dab_name = unique(sub("_.*", "", colnames(temp_df)))
+    
+    cab_names = unique(sub("[^_]*", "", colnames(temp_df[colnames(temp_df) != c("Conc.", "target_vector")]))) %>% substring(first = 2)
+    colnames(temp_df) = cab_names
+    
+    corr = cor(temp_df)
+    corrp.mat = cor_pmat(temp_df)
+    
+    cor_plot = ggcorrplot(corr, method = 'square', hc.order = TRUE, outline.color = "white",
+                          lab = F, title = paste(var, "pair-wise correlation", set = " "),
+                          tl.cex = 8,
+                          tl.srt = 90)+
+                          theme(plot.margin = unit(c(.01,.001,.01,.001), "mm"),
+                                legend.margin = unit(c(.01,.001,.01,.001), "mm"))
+                                # axis.text = element_text(size=3))
+    
+    within_variant_corr[[variant_ind]] = cor_plot
+    variant_ind = variant_ind + 1
+  }
+  # all_vars = arrangeGrob(grobs = within_variant_corr, ncol = 2, main = paste(dab_name, "pair-wise correlation matrix", sep=" "),
+  #                        width = c(4,4,4,4))
+  all_vars = grid.arrange(grobs = within_variant_corr, ncol = 2, top = paste(dab_name, "pair-wise correlation matrix", sep=" "))
+  print(all_vars)
+  ggsave(all_vars, file = paste(dab_name, "variant_separated_correlation_matrix.png", sep="_"), dpi = 320, width = 10)
+}
+
+
+
+for (df in split_potential_pair_df){
+  # This kind of makes no sense because its not split by variant
+  df = df %>% select_if(is.numeric) %>% dplyr::select(-Conc.)
+  scatter_plot_mat = pairs.panels(df, scale = T, gap = 0)
+  print(scatter_plot_mat)
+}
+```
+
+
+
+```{r}
+# NZV/correlation testing -- no columns NZV, makes sense because I essentially removed those with the dose response check
+for(df in split_potential_pair_df){
+  temp_df = df %>% dplyr::select(-c("Conc.", "Replicates", "target_vector"))
+  nzv = nearZeroVar(temp_df, saveMetrics = T)
+  print(nzv$nzv)
+}
+
+for(df in split_potential_pair_df){
+  temp_df = df %>% dplyr::select(-c("Conc.", "Replicates", "target_vector"))
+  descrCor = cor(temp_df)
+  print(summary(descrCor[upper.tri(descrCor)]))
+}
+
+test_cor = cor(split_potential_pair_df[[2]] %>% dplyr::select(-c("Conc.", "Replicates", "target_vector")))
+summary(test_cor)
+
+for (df in split_dabs){
+  temp_df = df %>% dplyr::select(-c("Conc.", "Replicates", "target_vector"))
+  temp_pr_comp = prcomp(temp_df)
+  dab_name = unique(sub("_.*", "", colnames(temp_df)))
+  print(fviz_eig(temp_pr_comp, addlabels = T, main = paste("Scree plot of:", dab_name, sep=' ')))
+}
+
+for (df in split_potential_pair_df){
+  temp_df = df %>% dplyr::select(-c("Conc.", "Replicates", "target_vector"))
+  temp_pr_comp = prcomp(temp_df)
+  print(fviz_eig(temp_pr_comp, addlabels = T))
+}
+```
+
+
+```{r}
+dab25 = split_dabs[[13]]
+
+# THRESHOLDING BY
+test_df = split_dabs[[13]] %>% dplyr::select(-c(Conc., Replicates))
+low_thresh_df = split_dabs[[13]] %>% filter(Conc. > .01) %>% dplyr::select(-c(Conc., Replicates))
+mid_thresh_df = split_dabs[[13]] %>% filter(Conc. > .08) %>% dplyr::select(-c(Conc., Replicates))
+strict_thresh_df = split_dabs[[13]] %>% filter(Conc. > 1) %>% dplyr::select(-c(Conc., Replicates))
+
+long_test_df = test_df %>% pivot_longer(cols = -target_vector, names_to = 'cAbs')
+
+# Thresholding the dataset to retain only instances with fluorescent values over 500 A.U. (2.7 on log scale)
+long_test_df_thresh = thresh_test_df %>% pivot_longer(cols = -target_vector, names_to = 'cAbs')
+
+
+# Histograms
+iqrs = sapply(test_df %>% select_if(is.numeric), IQR)
+
+bins = 2*(iqrs/(nrow(test_df)^(1/3)))
+
+histograms = long_test_df %>% ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)), binwidth = 0.05) + 
+  geom_density()+
+  facet_wrap(~cAbs)+
+  scale_fill_brewer(palette='Dark2')
+
+thresholded_histograms = long_test_df_thresh %>% ggplot(aes(x=value))+
+  geom_histogram(aes(y = after_stat(density)), binwidth = 0.05) + 
+  geom_density()+
+  facet_wrap(~cAbs)+
+  scale_fill_brewer(palette='Dark2')
+
+ 
+
+# Box plots  
+box_plot_func = function(dataframe, target, cols_to_exclude, title){
+  # The below check will fail if only a subset of the columns are in cols_to_exclude
+  if(any(cols_to_exclude) %in% colnames(dataframe)){
+    dataframe = dataframe %>% dplyr::select(-cols_to_exclude)
+  }
+  
+  box_list = list()
+  plot_index = 1
+  
+  for (pair in colnames(dataframe %>% select_if(is.numeric))){
+    p = dataframe %>% ggplot(aes_string(x=target, y=pair)) +
+      geom_boxplot()
+    box_list[[plot_index]] = p
+    plot_index = plot_index + 1
+  }
+  plot_image = arrangeGrob(grobs = box_list, top = title)
+  return(plot_image)
+}
+cols_to_exclude = c("Conc.", "Replicates")
+box_plot_base = box_plot_func(test_df, "target_vector", cols_to_exclude, "Boxplots by variant for each antibody pair (All samples)")
+box_plots_low_thresh = box_plot_func(low_thresh_df, "target_vector", cols_to_exclude, "Boxplots by variant for each antibody pair (Concentration > 0.01 ng/ml)")
+box_plots_mid_thresh = box_plot_func(mid_thresh_df, "target_vector", cols_to_exclude, "Boxplots by variant for each antibody pair (Concentration > 0.8 ng/ml)")
+box_plots_strict_thresh = box_plot_func(strict_thresh_df, "target_vector", cols_to_exclude, "Boxplots by variant for each antibody pair (Concentration > 0.1 ng/ml)")
+
+ggsave(file = "boxplot_no_threshold.png", box_plot_base, dpi = 320, width = 10)
+ggsave(file = "boxplot_low_threshold.png", box_plots_low_thresh, dpi = 320, width = 10)
+ggsave(file = "boxplot_mid_threshold.png", box_plots_mid_thresh, dpi = 320, width = 10)
+ggsave(file = "boxplot_strict_threshold.png", box_plots_strict_thresh, dpi = 320, width = 10)
+```
+
+```{r}
+# Ridges plot by variant
+ridge_plot = dataset %>% 
+    pivot_longer(cols = -sorter_col, names_to = 'val') %>%
+    ggplot(aes(x = value, y = sorter_col, fill = stat(quantile))) +
+    stat_density_ridges(quantile_lines=T,
+                        calc_ecdf = T,
+                        geom = 'density_ridges_gradient',
+                        quantiles = c(0.05, 0.95)) +  # geom_density_ridges(alpha=0.9) +
+    scale_fill_manual(name='Prob.', values = c('seagreen1', 'seagreen3', 'seagreen'),
+                      labels = c("(0, 5%]", "(5%, 95%]", '(95%, 1]'))+
+    facet_wrap(~val, scales = 'free_x')  +
+    labs(
+      title = 'Trends in each parameter',
+      x = 'Scaled log fluorescence',
+      y = 'Frequency'
+    )
+```
+
+```{r}
+# Correlation matrices
+corrplot_list = list()
+corrplot_ind = 1
+corrplot_func = function(df_list, threshold = 0){
+  for(df in df_list){
+    numeric_df = df %>% select_if(is.numeric) %>% filter(Conc. > threshold) %>% select(-Conc.) 
+    dab = unique(sub("_.*", "", numeric_df))
+    cor_mat = cor(numeric_df)
+    plot = corrplot(cor_mat, method = 'number', order = 'AOE')
+    corrplot_list[[corrplot_ind]] = plot
+    corrplot_ind = corrplot_ind + 1
+  }
+  plot_grid = arrangeGrob(corrplot_list)
+  return(plot_grid)
+}
+
+# NEED TO SAVE THESE PLOTS
+# Increasing the threshold seems to decrease the multicollinearity
+corr_plots = corrplot_func(split_dabs)
+corr_plots_low_thresh = corrplot_func(split_dabs, 0.01)
+corr_plots_mid_thresh = corrplot_func(split_dabs, 0.08)
+corr_plots_strict_thresh = corrplot_func(split_dabs, 0.1)
+```
+```{r}
+# PCA for each dataframe
+pca_plotter = function(df_list){
+  
+}
+```
+
+ 
+
+```{r}
+test_df = original_potential_pair_df[[3]]
+```
+
