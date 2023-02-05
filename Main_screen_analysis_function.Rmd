@@ -3,23 +3,15 @@ title: "Main_screen_analysis_function"
 output: html_document
 date: "2022-11-19"
 ---
-```{r}
-library(openxlsx)
-library(tidyverse)
-library(ggplot2)
-library(ggbeeswarm)
-library(psych)
-library(ggridges)
-library(ggmulti)
-library(RColorBrewer)
-```
 
 ```{r FILE INCLUDE}
-source("C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
 ```
-```{r}
 
+```{r Main_Chunk}
+split_dab_df_list = main_preprocessor()
 ```
+
 
 
 

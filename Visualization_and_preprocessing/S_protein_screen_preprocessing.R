@@ -8,21 +8,16 @@ library(ggmulti)
 library(RColorBrewer)
 library(sda)
 
+
 # NOTES: DOSE RESPONSE IS DETERMINED BY SELECTING VARIANT CURVES AND TAKING ONLY THOSE WHERE THE MAX IS GREATER THAN 10,000 AND THE MIN IS LESS THAN 1000
 # SIGNIFICANCE IS DETERMINED BY CAT SCORES, WHICH ARE CONVERTED TO P-VALUES USING D.O.F OF 2*NUM_SAMPLES-4 BASED ON THE D.O.F CALCULATION FOR DEPENDENT PAIRS
 # ANY PAIRS WITH SIGNIFICANTLY ASSOCIATED WITH ANY VARIANT (P<0.1) ARE RETAINED.
-
-screen_df = read.xlsx("C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/covid_screen_data_cleaned.xlsx")
-screen_df$target_vector = as.factor(screen_df$target_vector)
-
-
-
 
 # Operating under the condition that a good dose response generally has a low value of log fluorescence less than 3
 # and a high value of log fluorescence above 4. Very rarely dose a good dose response have a base noise higher than 1000
 # or a high value less than 10,000.
 
-# To identify this, this function simply jerry rigs a by column tapply without using a for loop. Basically we call sapply
+# To identify this, this function simply jerry rigs a "by column" tapply without using a for loop. Basically we call sapply
 # so that each column vector is then fed into a tapply function which in turn calls the actual effector function. I use 
 # tapply because its a convenient way of checking vectors by some external categorical variable (in our case the variant) Importantly,
 # the tapply function does do some work in that it determines if any of the variants return true when passed to the dr check function.
@@ -56,7 +51,9 @@ dose_response_check = function(dataframe, cols_to_check, target_vector){
 
 
 
-
+# This function is completely deprecated. It was inappropriate to use CAT scores
+# on my unsplit dataset, since CAT scores apply an LDA-like model to identify
+# significant correlations.
 
 cat_score_downselect = function(dataframe, cols_to_exclude, sig_level, target_vector){
   numeric_df = dataframe %>% dplyr::select(-cols_to_exclude)
@@ -83,27 +80,27 @@ cat_score_downselect = function(dataframe, cols_to_exclude, sig_level, target_ve
 
 
 # Ideally, we would like to use a single detection antibody in any final test
-# Additionally, our screen experiments are constructed to explicitly test the performance
+# Additionally, our screen experiments are constructed to test the performance
 # of a detection antibody against every other capture antibody, so we can only explicitly
 # claim efficacy in that context
 
 # Therefore, we should split the dataset into N subsets where N=number of dAbs
 
 split_dAb_dfs = function(dataframe_to_split, cols_to_exclude){
-  # dataframe to split must follow the pattern of dab_cab, since the regex will fail otherwise
-  # cols_to_exclude is a list of column names that you don't want to include in the regex,
-  # each will be rebound to the split dataframes seperately
+  # :param dataframe_to_split: Each feature name must follow the pattern of "dab_cab",
+  # since the regex will fail otherwise: dataframe
+  # :param cols_to_exclude: a list of column names that you don't want to include in the regex,
+  # each will eventually be rebound to the split dataframes: list of strings
+  # :return: a list where each element is a dataframe containing only the information
+  # from a single dAb
   numeric_screen = dataframe_to_split %>% dplyr::select(-cols_to_exclude)
   pair_names = colnames(numeric_screen)
   excluded_cols = dataframe_to_split[cols_to_exclude]
   
-  # For future me, regex patter just says find the underscore, and extract everything on the 
+  # For future me: regex patter just says find the underscore, and extract everything on the 
   # right side of it, then replace with an empty string
   dAb_names = unique(sub("_.*","",pair_names))
-  
-  # I think str_detect will fail if you have a dAb2 and a dAb20, since it will return true for 20
-  # and 2 when you just provide dAb2
-  
+
   dAb_dataframe_list = list()
   dataframe_list_ind = 1
   for (dAb in dAb_names){
@@ -119,15 +116,27 @@ split_dAb_dfs = function(dataframe_to_split, cols_to_exclude){
 }
 
 
-cols_to_check = colnames(screen_df %>% dplyr::select(-Conc.) %>% select_if(is.numeric))
+main_preprocessor = function(){
+  path = "C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/data/covid_screen_data_cleaned.csv"
+  screen_df = read.csv(path)
+  screen_df$target_vector = as.factor(screen_df$target_vector)
+  colnames(screen_df)[1] = "Conc."
+  print(screen_df)
+  
+  cols_to_check = colnames(screen_df %>% dplyr::select(-Conc.) %>% select_if(is.numeric))
+  
+  preselected_screen_df = dose_response_check(screen_df, cols_to_check, "target_vector")
+  
+  cols_to_exclude = c("Conc.","Replicates","target_vector")
+  
+  # Removed because CAT scores are inappropriate
+  # significant_df = cat_score_downselect(preselected_screen_df, cols_to_exclude, sig_level = 0.1, "target_vector")
+  
+  split_dabs = split_dAb_dfs(preselected_screen_df, cols_to_exclude)
+  
+  return(split_dabs)
+}
 
-preselected_screen_df = dose_response_check(screen_df, cols_to_check, "target_vector")
-
-cols_to_exclude = c("Conc.","Replicates","target_vector")
-
-# significant_df = cat_score_downselect(preselected_screen_df, cols_to_exclude, sig_level = 0.1, "target_vector")
-
-split_dabs = split_dAb_dfs(preselected_screen_df, cols_to_exclude)
 
 
 

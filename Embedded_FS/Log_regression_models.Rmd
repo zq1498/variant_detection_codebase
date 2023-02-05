@@ -18,7 +18,8 @@ library(doParallel)
 ```
 
 ```{r}
-source("C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Visualization_and_preprocessing/log_regression_accessory_functions.R")
 ```
 
 ```{r GLM ACCESSORY FUNCTIONS FUNCTION}
@@ -71,7 +72,9 @@ coef_plot = function(coef_df){
   return(coef_plot)
 }
 
+```
 
+```{r}
 # USED BY THE MULTI_PERFORMANCE_VIZ FUNCTION TO OBTAIN PERFORMANCE METRICS FROM EACH ELEMENT WITHIN THE LIST
 # Only compatible with current performance metric output (rows: iteration, accuracy, kappa, delta_F1, omi_F1, wt_F1, beta_F1, average_F1)
 extract_performance_metrics = function(list_of_results, ordered_list_of_dabs, object_to_obtain = 'performance_metrics'){
@@ -136,7 +139,9 @@ multi_performance_viz = function(list_of_results, ordered_list_of_dabs, object_t
   # I want the top N cAbs from each dab
 }
 
+```
 
+```{r}
 # GLM PERFROMANCE FUNCTION
 # Used in GLM_FS function to obtain performance metrics based on model predictions
 get_glm_performance = function(predictions, y_test){
