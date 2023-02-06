@@ -117,7 +117,7 @@ split_dAb_dfs = function(dataframe_to_split, cols_to_exclude){
 
 
 main_preprocessor = function(){
-  path = "C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/data/covid_screen_data_cleaned.csv"
+  path = "data/covid_screen_data_cleaned.csv"
   screen_df = read.csv(path)
   screen_df$target_vector = as.factor(screen_df$target_vector)
   colnames(screen_df)[1] = "Conc."

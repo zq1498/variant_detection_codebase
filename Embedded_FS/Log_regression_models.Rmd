@@ -18,222 +18,30 @@ library(doParallel)
 ```
 
 ```{r}
-source("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
-source("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Visualization_and_preprocessing/log_regression_accessory_functions.R")
+# Problem is that if I dont specify the entire path from the root directory, I
+# cant access this file because its one directory up and over from my the folder
+# that contains this log regression model
+
+# This file is within the Embedded_FS folder in the variant_detection_codebase
+# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
+# order to run in isolation, so I'm just setting the wd to the parent from which
+# I can call both files. The wd will be reset after this chunk anyway
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Embedded_FS/log_regression_accessory_functions.r")
+split_dab_df_list = main_preprocessor()
 ```
 
-```{r GLM ACCESSORY FUNCTIONS FUNCTION}
-# Takes a list of CV.glmnet objects, obtained the coefficients from every single one, then averages them
-get_cv_coefs = function(model_list, condense = T, plot = T){
-  # Arg1 is just a glmnet model of type multinom
-  # Arg2 (default T) determines whether or not the zero beta rows should be
-  # removed from the final matrix
-  coef_df = NULL
-  for (model in model_list){
-    betas = coef(model, s='lambda.1se')
-    coefs = data.frame(Pair = rownames(betas[[1]]))
-    for(num in 1:4){
-      coefs = cbind(coefs, betas[[num]][,1])
-      colnames(coefs)[num+1] = rownames(as.matrix(betas[num]))
-    }
-    if(condense == T){
-      coefs = filter(coefs, coefs[2]!=0)
-    }
-    if (is.null(coef_df)){
-      coef_df = coefs
-    }
-    else{
-      coef_df = rbind(coef_df, coefs)
-    }
-  }
-  coef_df = coef_df %>% group_by(Pair) %>% summarize_all(mean)
-
-  if (plot == T){
-    coef_plot = coef_plot(coef_df)
-  }
-  return(list("coef_df" = coef_df,
-              "coef_plot" = coef_plot))
-}
-
-
-coef_plot = function(coef_df){
-  coef_df = coef_df %>% mutate_if(is.numeric, abs)
-  coef_plot = coef_df %>% pivot_longer(col = -Pair,
-                                       names_to = 'variant') %>%
-                          ggplot(aes(x=reorder(Pair, -value), y=value, fill=variant))+
-                          geom_bar(position = 'dodge', stat='identity')+
-                          labs(
-                            title = 'Average (absolute value) lasso coefficients by variant',
-                            x = "Pairs",
-                            y = 'Coefficient'
-                          ) +
-                          theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
-                          scale_fill_brewer(palette = 'Dark2')
-  return(coef_plot)
-}
-
-```
-
-```{r}
-# USED BY THE MULTI_PERFORMANCE_VIZ FUNCTION TO OBTAIN PERFORMANCE METRICS FROM EACH ELEMENT WITHIN THE LIST
-# Only compatible with current performance metric output (rows: iteration, accuracy, kappa, delta_F1, omi_F1, wt_F1, beta_F1, average_F1)
-extract_performance_metrics = function(list_of_results, ordered_list_of_dabs, object_to_obtain = 'performance_metrics'){
-  # Getting averages
-  # Getting Kappa and accuracy
-  performance_metric_list = sapply(list_of_results, function (x) x[object_to_obtain])
-  averages = sapply(performance_metric_list, function (x) x %>% filter(iteration == 'Averages'))
-  Accuracy = unlist(averages[row.names(averages) == 'accuracy'])
-  Kappa = unlist(averages[row.names(averages) == 'kappa'])
-  
-  # Produces a list (#dabs * 4 in length) that contains the values in the following arrangement:
-  #     dab1_delta, dab1_omi, dab1_wt, dab1_beta, dab2_delta, dab2_omi, dab2_wt dab2_beta, ...
-  #     the order is dependent on the rownames ordering in the matrix, NOT the ordering in the list below 
-  f1_metrics = c("Delta_F1", "WT_F1", "Omi_F1", "Beta_F1")
-  f1s = unlist(averages[rownames(averages) %in% f1_metrics,])
-
-  # This will be the final dataframe that contains all the values
-  dabwise_performance = data.frame("dAb" = ordered_list_of_dabs)
-  
-  # Eventually will cbind this dataframe to the dabwise performance
-  temp_f1_df = data.frame(matrix(nrow = 1, ncol = 4))
-  colnames(temp_f1_df) = rownames(averages)[rownames(averages) %>% str_detect("F1")] 
-  
-  # Obtain the first 4 values, these are the associated vals from the matrix corresponding to the first dAb
-  for (val in 1:length(ordered_list_of_dabs)){
-    start_ind = 1 + length(f1_metrics)*(val-1)
-    temp_metrics = f1s[start_ind:(start_ind+4)]
-    temp_f1_df = rbind(temp_f1_df, temp_metrics)
-  }
-  temp_f1_df = na.omit(temp_f1_df)
-  temp_perf_metrics = cbind(Accuracy, Kappa, temp_f1_df) %>% signif(digits=3)
-  
-  dabwise_performance = cbind(dabwise_performance, temp_perf_metrics)
-
-  # Might add standard deviations later but for now Im leaving it out because it's a huge pain in the ass
-  return(dabwise_performance)
-}
-
-
-# MULTI_PERFORMANCE_VIZ -> USED TO OBTAIN PERFORMANCE METRICS FROM A LIST OF RESULTS
-# THE LIST OF RESULTS SHOULD FOLLOW THE SAME FORM AS THOSE PRODUCED IN GLM_CV FUNCTIONS
-# HANDLES PLOTTING BUT CALLS THE EXTRACT_PERFORMANCE_METRICS FUNCTION TO ACTUALLY OBTAIN VALUES TO PLOT
-multi_performance_viz = function(list_of_results, ordered_list_of_dabs, object_to_obtain = 'performance_metrics'){
-  
-  # Obtaining performance metrics
-  perf_metrics = extract_performance_metrics(list_of_results, ordered_list_of_dabs, object_to_obtain)
-  long_performance_metrics = perf_metrics %>% pivot_longer(cols = -dAb, names_to = 'metric')
-  
-  # I want bar graphs with grouped cols for each dab and all dabs on a single graph organized by greatest kappa
-  col_plot = ggplot(long_performance_metrics, aes(x=dAb, y=value, fill = metric)) + 
-    geom_bar(stat = "identity", position = "dodge")+
-    scale_fill_brewer(palette = 'Dark2')
-  print(col_plot)
-  
-  col_plot_2 = ggplot(long_performance_metrics, aes(x=metric, y=value, fill = metric))+
-    geom_bar(stat="identity")+
-    geom_text(aes(label=value, y=value, vjust = 2))+
-    scale_fill_brewer(palette = 'Dark2', type = "qual")+
-    facet_wrap(~dAb)
-    
-  print(col_plot_2)
-  # I want the top N cAbs from each dab
-}
-
-```
-
-```{r}
-# GLM PERFROMANCE FUNCTION
-# Used in GLM_FS function to obtain performance metrics based on model predictions
-get_glm_performance = function(predictions, y_test){
-  if(length(levels(predictions)) == length(levels(y_test))){
-    conf_matrix = confusionMatrix(y_test, predictions, mode = 'everything')
-    
-    Delta_F1 = conf_matrix$byClass[,'F1']['Class: Delta'][[1]]
-    Omi_F1 = conf_matrix$byClass[,'F1']['Class: Omicron'][[1]]
-    WT_F1 = conf_matrix$byClass[,'F1']['Class: WT'][[1]]
-    Beta_F1 = conf_matrix$byClass[,'F1']['Class: Beta'][[1]]
-      
-    perf_metrics = data.frame("accuracy" = conf_matrix$overall[[1]],
-                                  "kappa" = conf_matrix$overall[[2]],
-                                  "Delta_F1" = Delta_F1,
-                                  "Omi_F1" = Omi_F1,
-                                  "WT_F1" = WT_F1,
-                                  "Beta_F1" = Beta_F1,
-                                  "Average_f1" = mean(c(Delta_F1, Omi_F1, WT_F1, Beta_F1), na.rm = T))
-    return(list("perf_metrics" = perf_metrics,
-                "conf_matrix" = conf_matrix))
-  }
-  else{
-    reference = y_test
-    conf_matrix = CrossTable(predictions,
-                             y_test,
-                             prop.chisq = F)
-    table = conf_matrix$t
-    
-    # Convert table to df to make it easier to work with
-    N = length(reference)
-    tab_df = as.data.frame(table) %>% mutate_if(is.factor, as.character)
-    
-    # Accuracy is the sum of when the x and y are the same divided by the total
-    accuracy = sum(tab_df$Freq[tab_df$x==tab_df$y]) / N
-    
-    # kappa is 
-    # po is the accuracy of the model
-    po = sum(tab_df$Freq[tab_df$x==tab_df$y])/sum(tab_df$Freq)
-    
-    # pe is the agreement between the probabilities of each class based on the reference and the predicted
-    true_beta_percent = sum(tab_df$Freq[tab_df$y=='Beta']) / N
-    pred_beta_percent = sum(tab_df$Freq[tab_df$x=='Beta']) / N 
-    
-    true_omicron_percent = sum(tab_df$Freq[tab_df$y=='Omicron']) / N 
-    pred_omicron_percent = sum(tab_df$Freq[tab_df$x=='Omicron']) / N 
-    
-    true_delta_percent = sum(tab_df$Freq[tab_df$y=='Delta']) / N 
-    pred_delta_percent = sum(tab_df$Freq[tab_df$x=='Delta']) / N 
-    
-    true_wt_percent = sum(tab_df$Freq[tab_df$y=='WT']) / N 
-    pred_wt_percent = sum(tab_df$Freq[tab_df$x=='WT']) / N 
-    
-    pe = ((true_beta_percent * pred_beta_percent) / N^2) +
-         ((true_omicron_percent * pred_omicron_percent) / N^2) + 
-         ((true_delta_percent * pred_delta_percent) / N^2) +
-         ((true_wt_percent * pred_wt_percent) / N^2)
-    
-    kap = (po - pe)/(1 - pe)
-    
-    perf_metrics = data.frame("accuracy" = accuracy,
-                                  "kappa" = kap,
-                                  "Delta_F1" = NA,
-                                  "Omi_F1" = NA,
-                                  "WT_F1" = NA,
-                                  "Beta_F1" = NA,
-                                  "Average_f1" = NA)
-    
-    return(list("perf_metrics" = perf_metrics,
-                "conf_matrix" = table))
-  }
-}
-```
-
-```{r GLM_FS ACCESSORY FUNCTION TESTING}
-# THIS IS AN ARTIFACT LEFT OVER FROM WHEN I WAS TESTING SOME ACCESSORY FUNCTIONS
-# REQUIRES SPLIT_POTENTIAL_PAIR_DF TO BE IN THE GLOBAL ENV (CREATED IN S_PROTEIN_SCREEN_VISUALIZATION)
-# Contains dabs5, 6, 8, 17, 18, 19, 20, 25
-preselect_results_no_thresh = model_call_loop(split_potential_pair_df, "lasso_no_fs")
-get_cv_coefs(preselect_results_no_thresh[[6]]$optimal_model_list, plot = T)
-
-# There's nothing about the output of model_call_loop that gives you the dAb names. Maybe they could be extracted from get_cv_coefs but it's easier
-# for now to just create a list of them
-potential_pair_dab_list = c("dAb5", "dAb6", "dAb8", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
-
-multi_performance_viz(preselect_results_no_thresh, potential_pair_dab_list)
-```
 
 ```{r BASE GLM}
 # GLMs with moving thresholds but no feature selection
-# most recent change: Shifted scaling from threshold_df assignment to each resampling loop to allow for the inclusion of complex transformations
-# namel yeo-johnson
+# most recent change: Shifted scaling from threshold_df assignment to each
+# resampling loop to allow for the inclusion of complex transformations namel
+# yeo-johnson
 glm_no_fs = function(df, target, k1, num_repeats, threshold, alpha_value){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
   perf_df = NULL
   conf_table_list = NULL
   opt_model_list = list()
@@ -263,9 +71,13 @@ glm_no_fs = function(df, target, k1, num_repeats, threshold, alpha_value){
       y_global_train = global_train[[target]]
         
       # Create initial models
-      # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
-      # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
-      # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+      # This creates a set of models trained with varying lambdas. From here, I
+      # can obtain the optimal lambda and its associated coefficients. I train
+      # this internal loop without an intercept because I don't actually care
+      # what it is, nor does it matter if the model is made worse by it.
+      
+      # I need relative importances of features and internal rough performance.
+      # I train the later global model with an intercept, however
       internal_model = cv.glmnet(x_global_train_matrix, y_global_train, 
                                  family = "multinomial",
                                  alpha = alpha_value,
@@ -328,9 +140,13 @@ glm_no_fs = function(df, target, k1, num_repeats, threshold, alpha_value){
       conf_table_ind = conf_table_ind+1
     }
   }
-  # if anyone besides me is seeing this then please don't judge this joke of a fix. I need this array to be numeric, but I also need to pad it by 
-  # one value at the start, otherwise, without a value for the iteration column, the values wrap around the df index. I'll never encounter 1000 in normal
-  # operation, so it'll never result in a repeat value in the iteration column before it's immediately overwritten
+  # if anyone besides me is seeing this then please don't judge this joke of a
+  # fix. I need this array to be numeric, but I also need to pad it by one value
+  # at the start, otherwise, without a value for the iteration column, the
+  # values wrap around the df index. I'll never encounter 1000 in normal
+  
+  # operation, so it'll never result in a repeat value in the iteration column
+  # before it's immediately overwritten
   stdevs = c(1000, sapply(perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
   avgs = c(1000, sapply(perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
   
@@ -343,10 +159,9 @@ glm_no_fs = function(df, target, k1, num_repeats, threshold, alpha_value){
 }
 
 
-cl = makeCluster(6)
-registerDoParallel(cl)
 
-glm_test_df = split_dabs[[3]]
+# Using dAb6 as a test
+glm_test_df = split_dab_df_list[[3]]
 dab_name = "dAb20"
 
 no_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 0, 1)
@@ -355,31 +170,20 @@ mid_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 0.8, 1)
 strict_thresh_base_glm = glm_no_fs(glm_test_df, "target_vector", 5, 5, 1, 1)
 class(no_thresh_base_glm$confusion_matrices[[2]])
 
-stopCluster(cl)
-registerDoSEQ()
 
 low_thresh_base_glm$performance_metrics
 # Exporting confusion matrices to a csv
 # capture.output(no_thresh_base_glm$confusion_matrices, file = paste(dab_name, "no_thresh_conf_matrix.txt", sep="_"))
-# capture.output(low_thresh_base_glm$confusion_matrices, file = paste(dab_name, "low_thresh_conf_matrix.txt", sep="_"))
-# capture.output(mid_thresh_base_glm$confusion_matrices, file = paste(dab_name, "mid_thresh_conf_matrix.txt", sep="_"))
-# capture.output(strict_thresh_base_glm$confusion_matrices, file = paste(dab_name, "strict_thresh_conf_matrix.txt", sep="_"))
 
 # Exporting performance metrics to a excel workbook
 # wb = createWorkbook()
 # 
 # addWorksheet(wb, "No threshold")
-# addWorksheet(wb, "Low threshold")
-# addWorksheet(wb, "Mid threshold")
-# addWorksheet(wb, "Strict threshold")
 # 
 # writeData(wb, 1, no_thresh_base_glm$performance_metrics)
-# writeData(wb, 2, low_thresh_base_glm$performance_metrics)
-# writeData(wb, 3, mid_thresh_base_glm$performance_metrics)
-# writeData(wb, 4, strict_thresh_base_glm$performance_metrics)
-
+#
 # saveWorkbook(wb, paste(dab_name, "no_fs_lasso_performance.xlsx", sep="_"))
-
+#
 # Obtains coefficients from lists of models, averages them, then plots them
 no_thresh_coef = get_cv_coefs(no_thresh_base_glm$optimal_model_list, plot = T)
 low_thresh_coef = get_cv_coefs(low_thresh_base_glm$optimal_model_list, plot = T)
@@ -388,10 +192,6 @@ strict_thresh_coef = get_cv_coefs(strict_thresh_base_glm$optimal_model_list, plo
 
 # # Saves the coefficients plots as PNGs
 # ggsave(paste(dab_name, 'no_threshold_no_fs_glm_coefs.png', sep="_"), no_thresh_coef$coef_plot, dpi = 320, width = 10)
-# ggsave(paste(dab_name, 'low_threshold_no_fs_glm_coefs.png', sep="_"), low_thresh_coef$coef_plot, dpi = 320, width = 10)
-# ggsave(paste(dab_name, 'mid_threshold_no_fs_glm_coefs.png', sep="_"), mid_thresh_coef$coef_plot, dpi = 320, width = 10)
-# ggsave(paste(dab_name, 'strict_threshold_no_fs_glm_coefs.png', sep="_"), strict_thresh_coef$coef_plot, dpi = 320, width = 10)
-
 ```
 
 ```{r GLM CV WITH FS, warning=FALSE}
@@ -445,10 +245,14 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
         x_external_train_matrix = model.matrix(model_matrix_formula, external_train)
         y_external_train = external_train[[target]]
         
-        # Create initial models
-        # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
-        # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
-        # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+        # Create initial models This creates a set of models trained with
+        # varying lambdas. From here, I can obtain the optimal lambda and its
+        # associated coefficients. I train this internal loop without an
+        # intercept because I don't actually care what it is, nor does it matter
+        # if the model is made worse by it.
+        
+        # I need relative importances of features and internal rough
+        # performance. I train the later global model with an intercept, however
         external_model = cv.glmnet(x_external_train_matrix, y_external_train, 
                                    family = "multinomial",
                                    alpha = alpha_value,
@@ -561,6 +365,9 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
   global_perf_df$iteration[nrow(global_perf_df)-1] = "Averages"
   global_perf_df$iteration[nrow(global_perf_df)] = "Standard_devations"
   
+  stopCluster(cl)
+  registerDoSEQ()
+
   return(list("external_performance_metrics" = external_perf_df, 
                   "external_confusion_matrices" = external_conf_table_list,
                   "external_model_list" = external_opt_model_list,
@@ -569,9 +376,6 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
                   "global_model_list" = global_opt_model_list,
                   "best_features" = sorted_coefs))
 }
-
-cl = makeCluster(6)
-registerDoParallel(cl)
 
 glm_test_df = split_potential_pair_df[[3]]
 

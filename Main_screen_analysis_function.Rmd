@@ -5,7 +5,7 @@ date: "2022-11-19"
 ---
 
 ```{r FILE INCLUDE}
-source("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
 ```
 
 ```{r Main_Chunk}
