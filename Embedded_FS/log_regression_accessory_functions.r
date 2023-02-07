@@ -294,7 +294,7 @@ get_glm_performance = function(predictions, y_test){
 
 
 
-multi_fs_parser = function(mixed_performance_df){
+multi_fs_parser = function(mixed_performance_df, dab){
   
   std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
   
@@ -304,21 +304,31 @@ multi_fs_parser = function(mixed_performance_df){
     select(accuracy, kappa, Average_f1, num_features) %>% 
     group_by(num_features) %>%
     summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
-
+  
+  colnames(fs_data_avg) = c(
+    "num_features",
+    "Mean Accuracy",
+    "accuracy_se",
+    "Mean Kappa",
+    "kappa_se",
+    "Mean Average F1",
+    "Average_f1_se"
+  )
   # Braindead way of doing this becuase gathers been deprecated for forever,
   # pivot_longer would be better but I can't be bothered right now
   fs_avg_long = fs_data_avg %>%
-    gather(mean_type, mean_val, accuracy_mean, kappa_mean, Average_f1_mean) %>%
+    gather(mean_type, mean_val, "Mean Accuracy", "Mean Kappa", "Mean Average F1") %>%
     gather(se_type, se_val, accuracy_se, kappa_se, Average_f1_se) %>% 
     distinct(mean_val, .keep_all = T)
   
+
   viz = ggplot(fs_avg_long, aes(num_features, y = mean_val, colour=mean_type)) + 
     geom_line() + 
     geom_point() + 
     geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
-    scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features),  by = -1)) +
+    scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features),  by = -1))+
     ylim(0.2, 1.0) +
-    labs(title = 'Average Performance by number of pairs used in the model',
+    labs(title = paste('Average Performance by number of pairs used in the model - ', dab),
          x = "Number of antibody pairs in model",
          y = "Mean performance metric value",
          color = "Performance Metric") +
@@ -327,6 +337,32 @@ multi_fs_parser = function(mixed_performance_df){
   return(list("avg_df" = fs_avg_long,
               "plot" = viz))
 }
+
+
+model_call_loop = function(df_list,
+                           model_type,
+                           k1 = 5,
+                           k2 = 5,
+                           num_repeats = 3,
+                           threshold = 0,
+                           n_top_features = c()
+                           ){
+  result_list = list()
+  if (model_type == "lasso_fs"){
+    for (df in df_list){
+      result_list[[length(result_list) + 1]] = glm_control_multi_fs(df = split_dab_df_list[[10]], 
+                                                                  target = "target_vector", 
+                                                                  k1 = 5, 
+                                                                  k2 = 5, 
+                                                                  num_repeats = 3, 
+                                                                  threshold = 0,
+                                                                  alpha_value = 1,
+                                                                  n_top_features = c(10, 8, 7, 6, 5, 4, 3))
+    }
+  }
+  return(result_list)
+}
+
   
 
 

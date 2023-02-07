@@ -45,16 +45,15 @@ resampling_function = function(target,
                                perf_df,
                                model_list,
                                conf_table_list,
-                               transformation
-                               ) {
+                               transformation) {
   # Create model matrix -- .-1 term removes the intercept
   model_matrix_formula = paste(target, "~", ".-1") %>% as.formula()
   
   folds = createFolds(dataset[[target]], k = n_folds)
   
   for (fold in 1:n_folds) {
-    train = dataset[-folds[[fold]],]
-    test = dataset[folds[[fold]],]
+    train = dataset[-folds[[fold]], ]
+    test = dataset[folds[[fold]], ]
     
     preprocess = preProcess(train, method = transformation)
     train = predict(preprocess, train)
@@ -85,12 +84,10 @@ resampling_function = function(target,
       intercept = F,
       parallel = T
     )
-    opt_predict = predict(
-      model,
-      s = model$lambda.1se,
-      newx = x_test_matrix,
-      type = 'class'
-    )
+    opt_predict = predict(model,
+                          s = model$lambda.1se,
+                          newx = x_test_matrix,
+                          type = 'class')
     
     opt_predict = as.factor(opt_predict)
     perf_call = get_glm_performance(opt_predict, y_test)
@@ -224,7 +221,7 @@ global_resampling_function = function(target,
 }
 
 
-global_resampling_temp = function(target,
+multi_feature_global_resampling = function(target,
                                   train,
                                   test,
                                   sorted_coefs,
@@ -243,7 +240,6 @@ global_resampling_temp = function(target,
   test = predict(preprocess, test)
   
   model_matrix_formula = paste(target, "~", ".-1") %>% as.formula()
-  tester = 0
   # Starting for loop to iterate over the n_feature_list
   for (n_features in num_feature_list) {
     features = sorted_coefs$Pair[1:n_features]
@@ -295,7 +291,6 @@ global_resampling_temp = function(target,
       "perf_df" = perf_df
     )
   )
-  
 }
 
 

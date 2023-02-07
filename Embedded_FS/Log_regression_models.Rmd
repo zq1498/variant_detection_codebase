@@ -40,9 +40,8 @@ glm_control_multi_fs = function(df,
                        k2,
                        num_repeats,
                        threshold,
-                       alpha_value,
-                       n_top_features = c(),
-                       feature_selection = T) {
+                       n_top_features = c()
+                       ) {
   cl = makeCluster(6)
   registerDoParallel(cl)
   
@@ -62,7 +61,7 @@ glm_control_multi_fs = function(df,
   
   # Adding a dummy value at index 1 that gets replaced later when I know what 
   # the max number of features is
-  n_top_features = c(1, n_top_features)
+  num_feature_array = c(1, n_top_features)
   
   for (rep in 1:num_repeats) {
     global_kfold = createFolds(threshold_df[[target]], k = k1)
@@ -99,15 +98,17 @@ glm_control_multi_fs = function(df,
       
       # Append the max number of features to the n_top_features list
       max_features = length(sorted_coefs$Pair) # the only other column is the target vector
-      n_top_features[1] = max_features
-      print(n_top_features)
-      
-      global_resample = global_resampling_temp(
+      num_feature_array[1] = max_features
+      # Remove any values from the array that are below the max feature number
+      # If this occurs, then at the end of the function, a warning is printed out
+      num_feature_array = num_feature_array[which(num_feature_array <= max)]
+
+      global_resample = multi_feature_global_resampling(
         target = target,
         train = global_train,
         test = global_test,
         sorted_coefs = sorted_coefs,
-        num_feature_list = n_top_features,
+        num_feature_list = num_feature_array,
         perf_df = global_perf_df,
         model_list = global_opt_model_list,
         conf_table_list = global_conf_table_list,
@@ -142,6 +143,11 @@ glm_control_multi_fs = function(df,
   
   stopCluster(cl)
   registerDoSEQ()
+  
+  if(length(num_feature_array) < length(n_top_features)){
+    cat("WARNING: \n The max number of features was below some of the feature numbers your specified")
+  }
+  
   return(list("external_conf_tables" = external_conf_table_list,
               "external_opt_models" = external_opt_model_list,
               "external_performance" = external_perf_df,
@@ -155,17 +161,16 @@ glm_control_multi_fs = function(df,
 
 # Removed feature_selection boolean. Now if you don't want feature selection
 # just pass nothing to n_top_features, the default is a null list
-mutli_fs_glm = glm_control_multi_fs(df = glm_test_df, 
+mutli_fs_glm = glm_control_multi_fs(df = split_dab_df_list[[10]], 
                                target = "target_vector", 
                                k1 = 5, 
                                k2 = 5, 
                                num_repeats = 3, 
                                threshold = 0,
-                               alpha_value = 1,
-                               n_top_features = c(10, 6, 8, 4)
+                               n_top_features = c(10, 8, 7, 6, 5, 4, 3)
                                )
 
-
+split_dab_df_list
 fs_viz = multi_fs_parser(mutli_fs_glm$global_performance)
 fs_viz$plot
 ```
@@ -173,47 +178,31 @@ fs_viz$plot
 
 
 ```{r MODEL LOOP, warning=FALSE}
-# Builds models and tests performance
-model_call_loop = function(df_list, model_type, k1=5, num_repeats=5, threshold=0, alpha_value = 1, k2 = 5, n_top_features = 10){
-  # Currently supports lasso model types
-  result_list = rep(NULL, length(df_list))
-  
-  cl = makeCluster(6)
-  registerDoParallel(cl)
-  
-  result_ind = 1
-  
-  if (model_type == "lasso_no_fs"){
-    for (df in df_list){
-      result_list[[result_ind]] = glm_no_fs(df, "target_vector", k1, num_repeats, threshold = 0, alpha_value = 1)
-      result_ind = result_ind + 1
-    }
-  }
-  else if (model_type == "lasso_fs"){
-    for(df in df_list){
-      print(result_ind)
-      result_list[[result_ind]] = glm_fs(df = df,
-                                         target = 'target_vector',
-                                         k1, k2, num_repeats,
-                                         threshold, alpha_value,
-                                         n_top_features = n_top_features)
-      result_ind = result_ind+1
-    }
-  }
-  stopCluster(cl)
-  registerDoSEQ()
-  return(result_list)
-}
+all_models = model_call_loop(df_list = split_dab_df_list,
+                             model_type = 'lasso_fs',
+                             k1 = 5,
+                             k2 = 5,
+                             num_repeats = 3,
+                             threshold = 0,
+                             n_top_features = c(10, 8, 7, 6, 5, 4, 3)
+                             )
 
-
-fs_lasso = model_call_loop(split_potential_pair_df, "lasso_fs", n_top_features = 3)
-for (ind in c(1:8)){
-  plot = get_cv_coefs(fs_lasso[[ind]]$global_model_list)
-  print(plot)
+split_dab_df_list
+split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
+length(split_dab_df_order)
+all_models[[1]]$global_performance
+all_models[[2]]$global_performance
+all_results = sapply(all_models, function(x) x['global_performance'])
+all_results
+dab_ind = 1
+for (result in all_results){
+  dab = split_dab_df_order[dab_ind]
+  res_viz = multi_fs_parser(result, dab)
+  print(res_viz$plot)
+  ggsave(filename = paste("Performance over num_features: ", dab),
+         dpi = 600)
+  dab_ind = dab_ind+1
 }
-fs_lasso[[3]]$global_model_list
-# fs_lasso[[1]]$best_features
-multi_performance_viz(fs_lasso, potential_pair_dab_list, object_to_obtain = "global_performance_metrics")
 ```
 
 
