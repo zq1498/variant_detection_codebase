@@ -10,85 +10,42 @@ library(doParallel)
 library(roxygen2)
 
 
-external_resample = function(target,
-                             global_train,
-                             n_folds,
-                             external_perf_df,
-                             external_model_list,
-                             external_conf_table_list) {
-  # Create model matrix -- .-1 term removes the intercept
-  model_matrix_formula = paste(target, "~", ".-1") %>% as.formula()
-  
-  external_folds = createFolds(global_train[[target]], k = n_folds)
-  
-  for (fold in 1:n_folds) {
-    external_train = global_train[-external_folds[[fold]],]
-    external_test = global_train[external_folds[[fold]],]
-    
-    x_external_train_matrix = model.matrix(model_matrix_formula, external_train)
-    y_external_train = external_train[[target]]
-    
-    x_external_test_matrix = model.matrix(model_matrix_formula, external_test)
-    y_external_test = external_test[[target]]
-    
-    # Create initial models This creates a set of models trained with
-    # varying lambdas. From here, I can obtain the optimal lambda and its
-    # associated coefficients. I train this internal loop without an
-    # intercept because I don't actually care what it is, nor does it matter
-    # if the model is made worse by it.
-    
-    # Hardcoding alpha = 1 since I always want lasso, would need to be changes
-    # for elastic net
-    external_model = cv.glmnet(
-      x_external_train_matrix,
-      y_external_train,
-      family = 'multinomial',
-      alpha = 1,
-      type.multinomial = 'grouped',
-      nfolds = 5,
-      type.measure = 'class',
-      intercept = F,
-      parallel = T
-    )
-    print(external_model)
-    opt_external_predict = predict(
-      external_model,
-      s = external_model$lambda.1se,
-      newx = x_external_test_matrix,
-      type = 'class'
-    )
-    
-    opt_external_predict = as.factor(opt_external_predict)
-    perf_call = get_glm_performance(opt_external_predict, y_external_test)
-    
-    external_conf_matrix = perf_call$conf_matrix
-    external_conf_table_list[[length(external_conf_table_list) + 1]] = external_conf_matrix
-    external_model_list[[length(external_model_list) + 1]] = external_model
-    
-    if (is.null(external_perf_df)) {
-      external_perf_df = perf_call$perf_metrics
-    }
-    else{
-      external_perf_df = rbind(external_perf_df, perf_call$perf_metrics)
-    }
-  }
-  
-  return(
-    list(
-      "external_conf_table_list" = external_conf_table_list,
-      "external_opt_model_list" = external_model_list,
-      "external_perf_df" = external_perf_df
-    )
-  )
-
-}
-
+#' resampling_function
+#'
+#' @param target the name of the target vector: str
+#' @param dataset data that you want to split and use in the K-fold CV loop
+#' @param n_folds how many folds you want to use
+#' @param perf_df a current data frame of performance metrics, must be stored
+#' after the function returns and passed in again on the next loop iteration. The
+#' data added by this function is obtained from the get_glm_performance function
+#' @param model_list a current list in which each element is a model object 
+#' returned by glmnet
+#' @param conf_table_list a current list of confusion matrices in which each
+#' element is a confusion matrix returned by either the caret function or manually
+#' constructed by the get_glm_performance function 
+#' @param transformation a vector containing strings that denote the set of 
+#' transformations you wish to apply to your dataset. Passed to the preProcess
+#' Caret function
+#'
+#' @return three objects, (1) an updated model_list, (2) and updates confusion
+#' matrix list, and (3) and updated perfromance metric list
+#' c("scale", "center", "BoxCox")
+#' @example external_resample = resampling_function(
+#'  target = target,
+#'  dataset = global_train,
+#'  n_folds = k2,
+#'  perf_df = external_perf_df,
+#'  model_list = external_opt_model_list,
+#'  conf_table_list = external_conf_table_list,
+#'  transformation = c("scale", "center", "BoxCox")
+#' )
 resampling_function = function(target,
                                dataset,
                                n_folds,
                                perf_df,
                                model_list,
-                               conf_table_list
+                               conf_table_list,
+                               transformation
                                ) {
   # Create model matrix -- .-1 term removes the intercept
   model_matrix_formula = paste(target, "~", ".-1") %>% as.formula()
@@ -98,6 +55,10 @@ resampling_function = function(target,
   for (fold in 1:n_folds) {
     train = dataset[-folds[[fold]],]
     test = dataset[folds[[fold]],]
+    
+    preprocess = preProcess(train, method = transformation)
+    train = predict(preprocess, train)
+    test = predict(preprocess, test)
     
     x_train_matrix = model.matrix(model_matrix_formula, train)
     y_train = train[[target]]
@@ -156,13 +117,15 @@ resampling_function = function(target,
 }
 
 
+
 global_resampling_function = function(target,
                                       train,
                                       test,
                                       best_features,
                                       perf_df,
                                       model_list,
-                                      conf_table_list) {
+                                      conf_table_list,
+                                      transformation) {
   # The only difference between this and the normal resampling function is
   # that this function doesn't use k-fold CV, it just takes a train and test df
   # directly. It also downselects the df based on best features
@@ -171,6 +134,10 @@ global_resampling_function = function(target,
   
   downselect_test = cbind(test[[target]], test[best_features])
   colnames(downselect_test)[1] = target
+  
+  preprocess = preProcess(downselect_train, method = transformation)
+  downselect_train = predict(preprocess, downselect_train)
+  downselect_test = predict(preprocess, downselect_test)
   
   model_matrix_formula = paste(target, "~", ".-1") %>% as.formula()
   
