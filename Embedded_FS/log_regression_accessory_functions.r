@@ -4,12 +4,12 @@ library(caret)
 library(ggplot2)
 library(stats)
 library(psych)
-library(factoextra)
 library(glmnet)
 library(gmodels)
 library(gridExtra)
 library(doParallel)
 library(roxygen2)
+library(RColorBrewer)
 
 
 # Contains all functions necessary for handling the output of the log regression
@@ -291,3 +291,55 @@ get_glm_performance = function(predictions, y_test){
                 "conf_matrix" = table))
   }
 }
+
+
+
+multi_fs_parser = function(mixed_performance_df){
+  
+  std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
+  
+  fs_data = mixed_performance_df %>% filter(!global_iterations %in% c("Average","Stdev"))
+  
+  fs_data_avg = fs_data %>%
+    select(accuracy, kappa, Average_f1, num_features) %>% 
+    group_by(num_features) %>%
+    summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
+
+  # Braindead way of doing this becuase gathers been deprecated for forever,
+  # pivot_longer would be better but I can't be bothered right now
+  fs_avg_long = fs_data_avg %>%
+    gather(mean_type, mean_val, accuracy_mean, kappa_mean, Average_f1_mean) %>%
+    gather(se_type, se_val, accuracy_se, kappa_se, Average_f1_se) %>% 
+    distinct(mean_val, .keep_all = T)
+  
+  viz = ggplot(fs_avg_long, aes(num_features, y = mean_val, colour=mean_type)) + 
+    geom_line() + 
+    geom_point() + 
+    geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
+    scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features),  by = -1)) +
+    ylim(0.2, 1.0) +
+    labs(title = 'Average Performance by number of pairs used in the model',
+         x = "Number of antibody pairs in model",
+         y = "Mean performance metric value",
+         color = "Performance Metric") +
+    scale_color_brewer(palette = 'Dark2')
+  
+  return(list("avg_df" = fs_avg_long,
+              "plot" = viz))
+}
+  
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
