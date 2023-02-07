@@ -1,11 +1,5 @@
-library(openxlsx)
 library(tidyverse)
-library(ggplot2)
-library(ggbeeswarm)
 library(psych)
-library(ggridges)
-library(ggmulti)
-library(RColorBrewer)
 library(sda)
 
 

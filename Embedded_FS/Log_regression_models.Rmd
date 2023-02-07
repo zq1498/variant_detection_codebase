@@ -10,18 +10,14 @@ library(caret)
 library(ggplot2)
 library(stats)
 library(psych)
-library(factoextra)
 library(glmnet)
 library(gmodels)
 library(gridExtra)
 library(doParallel)
+library(roxygen2)
 ```
 
 ```{r}
-# Problem is that if I dont specify the entire path from the root directory, I
-# cant access this file because its one directory up and over from my the folder
-# that contains this log regression model
-
 # This file is within the Embedded_FS folder in the variant_detection_codebase
 # parent directory, but it relies on the S_protein_screen_preprocessing.R in 
 # order to run in isolation, so I'm just setting the wd to the parent from which
@@ -29,15 +25,15 @@ library(doParallel)
 setwd("..")
 source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
 source("Embedded_FS/log_regression_accessory_functions.r")
+source("Embedded_FS/lasso_resampling_functions.R")
 split_dab_df_list = main_preprocessor()
 ```
-
 
 ```{r BASE GLM}
 # GLMs with moving thresholds but no feature selection
 # most recent change: Shifted scaling from threshold_df assignment to each
-# resampling loop to allow for the inclusion of complex transformations namel
-# yeo-johnson
+# resampling loop to allow for the inclusion of complex transformations namely
+# yeo-johnson which comes close to linearizing the dose response curves
 glm_no_fs = function(df, target, k1, num_repeats, threshold, alpha_value){
   cl = makeCluster(6)
   registerDoParallel(cl)
@@ -199,6 +195,9 @@ strict_thresh_coef = get_cv_coefs(strict_thresh_base_glm$optimal_model_list, plo
 glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
                      n_top_features){
   # I GUARANTEE THAT THE INDEX VAR IS GOING TO BE FUCKED UP AND WILL TAKE ME HOURS TO FIX LMAO
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
   external_perf_df = NULL
   global_perf_df = NULL
   
@@ -206,7 +205,7 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
   global_conf_table_list = NULL
   
   external_opt_model_list = list()
-  global_model_list = list()
+  # global_model_list = list()
   
   global_opt_model_list = list()
   average_coef_plot_list = list()
@@ -214,6 +213,7 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
   threshold_df = df %>% filter(Conc. > threshold) %>% 
                   select(-c(Conc., Replicates)) %>%
                   mutate_if(is.numeric, scale)
+  print(threshold_df)
   
   for(rep in 1:num_repeats){
   global_kfold = createFolds(threshold_df[[target]], k = k1)
@@ -257,7 +257,7 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
                                    family = "multinomial",
                                    alpha = alpha_value,
                                    type.multinomial = 'grouped',
-                                   nfolds = 5, # nrow(external_train),
+                                   nfolds = 5, # nrow(external_train) if I wanted LOOCV
                                    type.measure = 'class',
                                    intercept = F,
                                    parallel = T)
@@ -288,20 +288,16 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
       
       average_abs_external_coefs = average_external_coefs %>% mutate_if(is.numeric, abs)
       
-      num_features = n_top_features
-  
       sorted_coefs = average_abs_external_coefs %>% select_if(is.numeric) %>% 
                       mutate(sum = rowSums(.)) %>% 
                       mutate('Pair' = average_abs_external_coefs$Pair) %>% 
                       arrange(desc(sum))
       
-      best_features = sorted_coefs$Pair[1:num_features]
+      best_features = sorted_coefs$Pair[1:n_top_features]
       global_train = cbind(global_train[[target]], global_train[best_features])
       colnames(global_train)[1] = target
       
       global_test = cbind(global_test[[target]], global_test[best_features])
-      print("global training data")
-      print(global_train)
       colnames(global_test)[1] = target
       
       # Create global model matrices
@@ -324,7 +320,7 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
                                alpha = 1,
                                intercept = F)
       
-      global_model_list[fold1] = global_model
+      # global_model_list[fold1] = global_model
       
       global_predict = predict(global_model, newx = x_global_test_matrix,
                                type = 'class',
@@ -346,13 +342,11 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
       global_conf_table_list[[global_ind]] = global_conf_matrix
       global_opt_model_list[[global_ind]] = global_model
       global_ind = global_ind+1
-    
-    # Averaging the performance based on the recorded metrics of the external k-fold cv
-    # I have this mob deep in the function because I'll eventually have an external number
-    # of repeats, and this averaging needs to be when the last repeat concludes
-  
     }
   }
+  # Averaging the performance based on the recorded metrics of the external k-fold cv
+  # I have this mob deep in the function because I'll eventually have an external number
+  # of repeats, and this averaging needs to be when the last repeat concludes
   external_stdevs = c(1000, sapply(external_perf_df %>% dplyr::select(-iteration), sd, na.rm = T))
   external_avgs = c(1000, sapply(external_perf_df %>% dplyr::select(-iteration), mean, na.rm = T))
   external_perf_df = rbind(external_perf_df, avgs = external_avgs, stdevs = external_stdevs)
@@ -377,11 +371,11 @@ glm_fs = function(df, target, k1, k2, num_repeats, threshold, alpha_value,
                   "best_features" = sorted_coefs))
 }
 
-glm_test_df = split_potential_pair_df[[3]]
+glm_test_df = split_dab_df_list[[3]]
 
 # I know that there are 8 dAbs for the dAb6 df. Let's test the performance of 5 features
 # CURENTLY WORKING BUT SOME WONKY STUFF WITH THE INDEXING OF THE RECORDED PERFORMANCE AND I STILL NEED TO AVERAGE THE GLOBAL PERFORMANCES
-no_thresh_fs_glm = glm_fs(df = glm_test_df, 
+fs_glm_full = glm_fs(df = glm_test_df, 
                                target = "target_vector", 
                                k1 = 5, 
                                k2 = 5, 
@@ -390,13 +384,143 @@ no_thresh_fs_glm = glm_fs(df = glm_test_df,
                                alpha_value = 1,
                                n_top_features = 5)
 
-# sapply(no_thresh_fs_glm$global_performance_metrics[1:75,] %>% dplyr::select(-iteration), mean, na.rm = T)
-get_cv_coefs(fs_lasso[[1]]$global_model_list)
-multi_performance_viz(fs_lasso, potential_pair_dab_list, object_to_obtain = "global_performance_metrics")
-no_thresh_fs_glm$global_performance_metrics
-stopCluster(cl)
-registerDoSEQ()
+fs_glm_full$external_model_list[[1]]
+# no_thresh_fs_glm$global_model_list
+# # sapply(no_thresh_fs_glm$global_performance_metrics[1:75,] %>% dplyr::select(-iteration), mean, na.rm = T)
+# # At one point I was double bracket indexing the no_thresh_fs_glm output, but I
+# # have no idea why I was doing that?
+# get_cv_coefs(no_thresh_fs_glm$global_model_list, plot = T)
+# multi_performance_viz(no_thresh_fs_glm, potential_pair_dab_list, object_to_obtain = "global_performance_metrics")
+# no_thresh_fs_glm$global_performance_metrics
+
 ```
+
+```{r DECOMPOSED GLM_FS FUNCTION warning = FALSE}
+# Careful with this function name, dangerously close to glm.control from stats package
+glm_control = function(df,
+                       target,
+                       k1,
+                       k2,
+                       num_repeats,
+                       threshold,
+                       alpha_value,
+                       n_top_features) {
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = list()
+  global_conf_table_list = list()
+  
+  external_opt_model_list = list()
+  global_opt_model_list = list()
+  
+  average_coef_plot_list = list()
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>%
+    select(-c(Conc., Replicates)) %>%
+    mutate_if(is.numeric, scale)
+  
+  for (rep in 1:num_repeats) {
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    
+    for (fold1 in 1:k1) {
+      global_train = threshold_df[-global_kfold[[fold1]], ]
+      global_test = threshold_df[global_kfold[[fold1]], ]
+      
+      external_resample = resampling_function(
+        target = target,
+        dataset = global_train,
+        n_folds = k2,
+        perf_df = external_perf_df,
+        model_list = external_opt_model_list,
+        conf_table_list = external_conf_table_list
+      )
+      external_conf_table_list = external_resample$conf_table_list
+      external_opt_model_list = external_resample$opt_model_list
+      external_perf_df = external_resample$perf_df
+
+  # SORTING COEFS AND DOWNSELECTING GLOBAL DF BASED ON EXTERNAL RESAMPLING
+  coefs_call = get_cv_coefs(external_opt_model_list, plot = T)
+  average_coef_plot_list[[length(average_coef_plot_list)+1]] = coefs_call$coef_plot
+  average_external_coefs = coefs_call$coef_df
+
+  average_abs_external_coefs = average_external_coefs %>% mutate_if(is.numeric, abs)
+
+  sorted_coefs = average_abs_external_coefs %>% select_if(is.numeric) %>%
+                  mutate(sum = rowSums(.)) %>%
+                  mutate('Pair' = average_abs_external_coefs$Pair) %>%
+                  arrange(desc(sum))
+
+  best_features = sorted_coefs$Pair[1:n_top_features]
+  
+  global_resample = global_resampling_function(
+        target = target,
+        train = global_train,
+        test = global_test,
+        perf_df = global_perf_df,
+        model_list = global_opt_model_list,
+        conf_table_list = global_conf_table_list
+      )
+  global_conf_table_list = global_resample$conf_table_list
+  global_opt_model_list = global_resample$opt_model_list
+  global_perf_df = global_resample$perf_df
+    }
+  }
+  
+  # Averaging the performance based on the recorded metrics of the external k-fold cv
+  external_iterations = append(c(1:nrow(external_perf_df)),
+                               c("Average", "Stdev"))
+  global_iterations = append(c(1:nrow(global_perf_df)),
+                             c("Average", "Stdev"))
+
+  external_perf_df = bind_rows(
+    external_perf_df,
+    colMeans(external_perf_df, na.rm = T),
+    sapply(external_perf_df, sd, na.rm = T)
+  )
+  external_perf_df = cbind(external_perf_df, external_iterations)
+  
+  global_perf_df = bind_rows(
+    global_perf_df,
+    colMeans(global_perf_df, na.rm = T),
+    sapply(global_perf_df, sd, na.rm = T)
+  )
+  global_perf_df = cbind(global_perf_df, global_iterations)
+  
+  stopCluster(cl)
+  registerDoSEQ()
+  return(list("external_conf_tables" = external_conf_table_list,
+              "external_opt_models" = external_opt_model_list,
+              "external_performance" = external_perf_df,
+              "global_conf_tables" = global_conf_table_list,
+              "global_opt_models" = global_opt_model_list,
+              "global_performance" = global_perf_df,
+              "sorted_coefs" = best_features
+              ))
+}
+
+no_thresh_fs_glm = glm_control(df = glm_test_df, 
+                               target = "target_vector", 
+                               k1 = 5, 
+                               k2 = 5, 
+                               num_repeats = 3, 
+                               threshold = 0,
+                               alpha_value = 1,
+                               n_top_features = 5)
+```
+
+```{r}
+lister3 = list()
+lister4 = append(lister3, 'hiya')
+lister4
+
+list = NULL
+length(list)+1
+```
+
 
 ```{r MODEL LOOP, warning=FALSE}
 # Builds models and tests performance
@@ -628,10 +752,12 @@ glm_no_fs_conc = function(df, target, k1, num_repeats, threshold, alpha_value){
       x_global_train_matrix = model.matrix(model_matrix_formula, global_train)
       y_global_train = global_train[[target]]
         
-      # Create initial models
-      # This creates a set of models trained with varying lambdas. From here, I can obtain the optimal lambda and its associated coefficients.
-      # I train this internal loop without an intercept because I don't actually care what it is, nor does it matter if the model is made worse by it.
-      # I need relative importances of features and internal rough performance. I train the later global model with an intercept, however
+      # Create initial models This creates a set of models trained with varying
+      # lambdas. From here, I can obtain the optimal lambda and its associated
+      # coefficients. I train this internal loop without an intercept because I
+      # don't actually care what it is, nor does it matter if the model is made
+      # worse by it. I need relative importances of features and internal rough
+      # performance. I train the later global model with an intercept, however
       internal_model = cv.glmnet(x_global_train_matrix, y_global_train, 
                                  family = "multinomial",
                                  alpha = alpha_value,
