@@ -332,6 +332,7 @@ multi_fs_parser = function(mixed_performance_df, dab){
          x = "Number of antibody pairs in model",
          y = "Mean performance metric value",
          color = "Performance Metric") +
+    theme_classic()+
     scale_color_brewer(palette = 'Dark2')
   
   return(list("avg_df" = fs_avg_long,
@@ -356,7 +357,6 @@ model_call_loop = function(df_list,
                                                                   k2 = 5, 
                                                                   num_repeats = 3, 
                                                                   threshold = 0,
-                                                                  alpha_value = 1,
                                                                   n_top_features = c(10, 8, 7, 6, 5, 4, 3))
     }
   }

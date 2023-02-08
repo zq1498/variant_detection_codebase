@@ -101,7 +101,7 @@ glm_control_multi_fs = function(df,
       num_feature_array[1] = max_features
       # Remove any values from the array that are below the max feature number
       # If this occurs, then at the end of the function, a warning is printed out
-      num_feature_array = num_feature_array[which(num_feature_array <= max)]
+      num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
 
       global_resample = multi_feature_global_resampling(
         target = target,
@@ -169,9 +169,9 @@ mutli_fs_glm = glm_control_multi_fs(df = split_dab_df_list[[10]],
                                threshold = 0,
                                n_top_features = c(10, 8, 7, 6, 5, 4, 3)
                                )
-
+split_dab_df_list[[10]]
 split_dab_df_list
-fs_viz = multi_fs_parser(mutli_fs_glm$global_performance)
+fs_viz = multi_fs_parser(mutli_fs_glm$global_performance, "dAb18")
 fs_viz$plot
 ```
 
@@ -187,19 +187,18 @@ all_models = model_call_loop(df_list = split_dab_df_list,
                              n_top_features = c(10, 8, 7, 6, 5, 4, 3)
                              )
 
-split_dab_df_list
 split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
-length(split_dab_df_order)
-all_models[[1]]$global_performance
-all_models[[2]]$global_performance
+
 all_results = sapply(all_models, function(x) x['global_performance'])
 all_results
+
 dab_ind = 1
 for (result in all_results){
   dab = split_dab_df_order[dab_ind]
   res_viz = multi_fs_parser(result, dab)
   print(res_viz$plot)
-  ggsave(filename = paste("Performance over num_features: ", dab),
+  ggsave(filename = paste("Performance over num_features: ", dab, ".png"),
+         plot = res_viz$plot,
          dpi = 600)
   dab_ind = dab_ind+1
 }
