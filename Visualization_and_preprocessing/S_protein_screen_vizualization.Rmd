@@ -4,7 +4,7 @@ output: html_document
 date: "2022-11-19"
 ---
 
-```{r}
+```{r PACKAGE LOADING}
 library(openxlsx)
 library(tidyverse)
 library(ggplot2)
@@ -16,7 +16,6 @@ library(RColorBrewer)
 library(corrplot)
 library(gridExtra)
 library(reshape2)
-library(caret)
 library(factoextra)
 library(scales)
 library(ggcorrplot)
@@ -28,7 +27,7 @@ source("C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visua
 
 
 ```{r}
-visualization_path = "C:/Users/Zach/Documents/Duke/covspot analysis/screen analysis/Code/Visualization_and_preprocessing/Data_viz"
+visualization_path = "Visualization_and_preprocessing/Data_viz"
 ```
 
 ```{r}
