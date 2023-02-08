@@ -38,8 +38,6 @@ get_cv_coefs = function(model_list,
                         condense = T,
                         plot = F) {
   
-  
-
   coef_df = NULL
   for (model in model_list) {
     betas = coef(model, s = 'lambda.1se')
@@ -89,9 +87,10 @@ coef_plot = function(coef_df) {
       fill = variant
     )) +
     geom_bar(position = 'dodge', stat = 'identity') +
-    labs(title = 'Average (absolute value) lasso coefficients by variant',
+    labs(# title = 'Average (absolute value) lasso coefficients by variant',
          x = "Pairs",
          y = 'Coefficient') +
+    theme_classic() + 
     theme(axis.text.x = element_text(
       angle = 45,
       vjust = 1,
@@ -351,7 +350,7 @@ model_call_loop = function(df_list,
   result_list = list()
   if (model_type == "lasso_fs"){
     for (df in df_list){
-      result_list[[length(result_list) + 1]] = glm_control_multi_fs(df = split_dab_df_list[[10]], 
+      result_list[[length(result_list) + 1]] = glm_control_multi_fs(df = df, 
                                                                   target = "target_vector", 
                                                                   k1 = 5, 
                                                                   k2 = 5, 
