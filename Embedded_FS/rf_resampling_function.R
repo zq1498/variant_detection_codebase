@@ -11,7 +11,14 @@ library(roxygen2)
 rf_resampling_function = function(target,
                                   dataset,
                                   n_folds,
+                                  perf_df,
+                                  coef_df,
+                                  conf_table_list,
                                   transformation){
+  # Function is almost identical to the lasso resample function, with the 
+  # exception that instead of a model list we pass a data frame of coefficients.
+  # The model list in the lasso resampling function is essentially only used to
+  # generate coefficients, so this cuts out the middle man
   model_formula = paste(target, "~", ".") %>% as.formula()
   
   folds = createFolds(dataset[[target]], k = n_folds)
@@ -24,9 +31,15 @@ rf_resampling_function = function(target,
     train = dataset[-folds[[fold]], ]
     test = dataset[folds[[fold]], ]
     
-    preprocess = preProcess(train, method = tramsformation)
+    preprocess = preProcess(train, method = transformation)
     train = predict(preprocess, train)
     test = predict(preprocess, test)
+    
+    x_train = train %>% select(-target)
+    y_train = train[[target]]
+    
+    x_test = test %>% select(-target)
+    y_test = test[[target]]
     
     rf_train = train(model_formula,
                      data = train,
@@ -35,135 +48,109 @@ rf_resampling_function = function(target,
                      trControl = train_contrl,
                      verbose = T)
     
-    opt_predict = predict()
+    opt_predict = predict(rf_train$finalModel, x_test,
+                          type = 'response')
+    opt_predict = opt_predict$predictions %>% as.factor()
     
+    perf_call = get_rf_performance(opt_predict, y_test)
+    
+    coef_imp = varImp(rf_train)
+    # Transposing the matrix is perfect, since it makes the row names the colnames
+    # which can then be passed to bind_rows. Bind_rows is ideal because it matches
+    # by column name.
+    coef_imp = as.data.frame(t(coef_imp$importance))
+    
+    if (is.null(perf_df)){
+      perf_df = perf_call$perf_metrics
+    }
+    else{
+      perf_df = bind_rows(perf_df, perf_call$perf_metrics)
+    }
+    
+    if (is.null(coef_df)){
+      coef_df = coef_imp
+    }
+    else{
+      coef_df = coef_df %>% bind_rows(coef_imp)
+    }
+    conf_table_list[[length(conf_table_list)+1]] = perf_call$conf_matrix
     
   }
+  return(list("perf_df" = perf_df,
+              "coef_df" = coef_df,
+              "conf_table" = conf_table_list))
 }
 
 
-#shit ass rf_train function of yore for reference
-```{r, ranger_cv_function}
-# Outer cross-validation loop is the training data (recombinant) and testing data is 
-# the clinical data
+multi_feature_global_rf_resampling = function(target,
+                                              train,
+                                              test,
+                                              sorted_coefs,
+                                              num_feature_list,
+                                              perf_df,
+                                              coef_df,
+                                              conf_table_list,
+                                              transformation) {
+  preprocess = preProcess(train, method = transformation)
+  train = predict(preprocess, train)
+  test = predict(preprocess, test)
+  
+  train_contrl = trainControl(method = "repeatedcv",
+                              number = 5,
+                              repeats = 3)
+  
+  model_formula = paste(target, "~", ".") %>% as.formula()
+  
+  for (n_features in num_feature_list){
+    features = sorted_coefs$Pairs[1:n_features]
+    downselect_train = train %>% select(target, features)
+    downselect_test = test %>% select(target, features)
+    
+    x_train = downselect_train %>% select(-target)
+    y_train = downselect_train[[target]]
+    print(x_train)
+    x_test = downselect_test %>% select(-target)
+    print(x_test)
+    y_test = downselect_test[[target]]
+    
+    rf_train = train(model_formula,
+                     data = train,
+                     method = "ranger",
+                     importance = "impurity",
+                     trControl = train_contrl,
+                     verbose = T)
+    
+    opt_predict = predict(rf_train$finalModel, x_test,
+                          type = 'response')
+    opt_predict = opt_predict$predictions %>% as.factor()
 
-# The secondary cross-validation loop k-fold cross-validation of the recombinant data. This 
-# includes validation of the model trained in the tertiary loop, and subsequent feature
-# selection
-
-# The tertiary cross-validation loop is k-fold CV via caret or glmnet
-
-recombinant_cv = function(clinical_df, recombinant_df, target, class_dist = F,
-                          model_type, tune_grid, train_control){
-  # I can pretty easily modify this function to be a generalized method by adding
-  # a tune grid and a model method argument.
-  # Class distance indicates whether the training and testing sets should be 
-  # modified to include the Mahalanobis class distances as additional predictors
-  confusion_list = list()
-  model_list = list()
-  mod_index = 1
-  
-  best_tunes = NULL
-  internal_pred_df = NULL
-  
-  if (class_dist == T){
-    class_distances = getCentroids(recombinant_df, clinical_df, target)
-    clinical_df = cbind(clinical_df, class_distances$test_distances)
-    recombinant_df = cbind(recombinant_df, class_distances$train_distances)
-  }
-  
-  x_clinical_test = clinical_df %>% dplyr::select(-target)
-  y_clinical_test = clinical_df$Variant
-  
-  global_train_folds = createFolds(recombinant_df[[target]], k=5)
-  
-  for (fold in 1:length(global_train_folds)){
-    global_train = recombinant_df[-global_train_folds[[fold]],]
-    global_test = recombinant_df[global_train_folds[[fold]],]
+    perf_call = get_rf_performance(opt_predict, y_test)
     
-    x_global_train = global_train %>% dplyr::select(-target)
-    y_global_train = global_train[[target]]
+    coef_imp = varImp(rf_train)
+    # Transposing the matrix is perfect, since it makes the row names the colnames
+    # which can then be passed to bind_rows. Bind_rows is ideal because it matches
+    # by column name.
+    coef_imp = as.data.frame(t(coef_imp$importance))
     
-    x_global_test = global_test %>% dplyr::select(-target)
-    y_global_test = global_test[[target]]
-    
-    internal_mod = train(x = x_global_train,
-                         y = y_global_train,
-                         # preProc = c("center", "scale"),
-                         method = model_type,
-                         trControl = train_control,
-                         metric = 'Kappa',
-                         tuneGrid = tune_grid)
-    
-    # Using the final model obtained in the cross validation, predict on the left out data
-    internal_preds = predict(internal_mod$finalModel, x_global_test, 
-                             type = 'response')
-    
-    accuracy = sum(ifelse(internal_preds$predictions == y_global_test,
-                          1, 0))/
-      length(y_global_test)
-    
-    tune_acc = cbind(internal_mod$bestTune, accuracy)
-    
-    # Adds best tuning parameters onto the tuning parameters dataframe
-    if (is.null(best_tunes)){
-      best_tunes = tune_acc
+    if (is.null(perf_df)){
+      perf_df = perf_call$perf_metrics
     }
-    else {
-      best_tunes = rbind(best_tunes, tune_acc)
+    else{
+      perf_df = bind_rows(perf_df, perf_call$perf_metrics)
     }
     
-    confusionTable = confusionMatrix(data = internal_preds$prediction, 
-                                     reference = y_global_test)
-    model_list[[mod_index]] = c(model_list, internal_mod)
-    confusion_list[[mod_index]] = c(confusion_list, confusionTable)
-    mod_index = mod_index + 1
+    if (is.null(coef_df)){
+      coef_df = coef_imp
+    }
+    else{
+      coef_df = coef_df %>% bind_rows(coef_imp)
+    }
+    conf_table_list[[length(conf_table_list)+1]] = perf_call$conf_matrix
   }
-  
-  x_recombinant_full = recombinant_df %>% dplyr::select(-target)
-  y_recombinant_full = recombinant_df[[target]]
-  
-  clinical_model = train(x = x_recombinant_full,
-                         y = y_recombinant_full,
-                         trControl = train_control,
-                         method = model_type,
-                         metric = 'Kappa',
-                         tuneGrid = tune_grid)
-  
-  clinical_preds = predict(clinical_model$finalModel, x_clinical_test,
-                           type = 'response')
-  
-  clinical_confusion = confusionMatrix(data = clinical_preds$predictions,
-                                       reference = y_clinical_test)
-  
-  return(list("model_list" = model_list,
-              "tuner" = best_tunes,
-              "confusionMats" = confusion_list,
-              "final_model" = c(clinical_model),
-              "testConfusionMat" = clinical_confusion))
+  return(list("perf_df" = perf_df,
+              "coef_df" = coef_df,
+              "conf_table" = conf_table_list))
+
 }
-subsetted_clinical_df = known_var_clinical_data %>% filter(`1B2` > 3.5)
-
-clinical_model_data = subsetted_clinical_df %>% dplyr::select(-`1B2`)
-
-tuneGrid = expand.grid(mtry = c(1:3),
-                       min.node.size = c(1:5),
-                       splitrule = 'gini')
-
-trainControl = trainControl(method = 'repeatedcv',
-                            number = 5,
-                            repeats = 3)
-# adaptive = list(min = 5, alpha = 0.05,
-#                 method = 'BT', complete = T),
-# search = 'random')
-
-rf_train = recombinant_cv(clinical_model_data, full_recombinant_data, "Variant",
-                          model_type = 'ranger', tune_grid = tuneGrid, 
-                          train_control = trainControl)
 
 
-whole_set_performance = rf_train$testConfusionMat
-whole_set_model = rf_train$final_model
-whole_set_performance
-whole_set_model
-```

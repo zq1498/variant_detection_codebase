@@ -28,10 +28,11 @@ library(ranger)
 # I can call both files. The wd will be reset after this chunk anyway
 setwd("..")
 source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
-# source("Embedded_FS/log_regression_accessory_functions.r")
-# source("Embedded_FS/lasso_resampling_functions.R")
+source("Embedded_FS/rf_accessory_functions.R")
+source("Embedded_FS/rf_resampling_functions.R")
 split_dab_df_list = main_preprocessor()
 ```
+
 ```{r MULTI FS RF FUNCTION PROTOTYPE}
 rf_control_function = function(df,
                                target,
@@ -50,8 +51,8 @@ rf_control_function = function(df,
   external_conf_table_list = list()
   global_conf_table_list = list()
   
-  external_opt_model_list = list()
-  global_opt_model_list = list()
+  external_coef_df = NULL
+  global_coef_df = NULL
   
   
   threshold_df = df %>% filter(Conc. > threshold) %>% 
@@ -66,18 +67,72 @@ rf_control_function = function(df,
       global_train = threshold_df[-global_kfold[[global_fold]], ]
       global_test = threshold_df[global_kfold[[global_fold]], ]
       
-      external_resample = external_rf_resample(
+      external_resample = rf_resampling_function(
         target = target,
         dataset = global_train,
         n_folds = k2,
+        perf_df = external_perf_df,
+        coef_df = external_coef_df,
+        conf_table_list = external_conf_table_list,
+        transformation = c("scale", "center")
+        )
+      external_perf_df = external_resample$perf_df
+      external_coef_df = external_resample$coef_df
+      external_conf_table_list = external_resample$conf_table_list
+    }
+    # Next I need to average the importance and identify the top n pairs
+    # SORTING COEFS AND DOWNSELECTING GLOBAL DF BASED ON EXTERNAL RESAMPLING
+  #   Easier just to call this regardless since it's really fast   
+      avg_coefs = data.frame("avg_importance" = colMeans(external_coef_df))
+      avg_coefs = avg_coefs %>% arrange(desc(avg_importance))
+      avg_coefs$Pairs = row.names(avg_coefs)
+      
+      max_features = length(avg_coefs$avg_importance)
+      num_feature_array[1] = max_features
+      num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
+      
+      global_resample = multi_feature_global_rf_resampling(
+        target = target,
+        train = global_train,
+        test = global_test,
+        sorted_coefs = avg_coefs,
+        num_feature_list = num_feature_array,
+        perf_df = global_perf_df,
+        coef_df = global_coef_df,
+        conf_table_list = global_conf_table_list,
         transformation = c("scale", "center")
       )
-    }
+      global_conf_table_list = global_resample$conf_table_list
+      global_coef_df = global_resample$coef_df
+      global_perf_df = global_resample$perf_df
   }
+  return(list("external_conf_tables" = external_conf_table_list,
+              "external_coef_df" = external_coef_df,
+              "external_performance" = external_perf_df,
+              "global_conf_tables" = global_conf_table_list,
+              "global_coef_df" = global_coef_df,
+              "global_performance" = global_perf_df
+              ))
 }
   
-  
-  
+resample_test = rf_control_function(df = test_df,
+                               target = 'target_vector',
+                               k1 = 5,
+                               k2 = 5,
+                               num_repeats = 2,
+                               threshold = 0,
+                               n_top_features = c(10, 8, 4, 3)
+                               )
+resample_test$external_coef_df
+
+test = data.frame("avg_coefs" = colMeans(resample_test$external_coef_df))
+test
+test %>% arrange(desc(avg_coefs))
+
+# Need to get predictions/performance out of the ranger model (maybe conf matrices also) and figure out how to store the importance measures. Then I need to test the binding of the importance measures pretty exstensively to make sure that it's working correcty = prob will be a pain but oh well. Also should decide between impurity and permutation as importance metrics (https://alexisperrier.com/datascience/2015/08/27/feature-importance-random-forests-gini-accuracy.html)
+```
+```{r}
+# Test zone
 test_df = split_dab_df_list[[6]]
 test_df2 = split_dab_df_list[[3]]
 test_df
@@ -97,7 +152,12 @@ test_train = train(target_vector~.,
                    importance = "impurity",
                    trControl = test_ctrl,
                    verbose = T)
-
+test_train2 = train(target_vector~.,
+                    data = test_thresh_df,
+                    method = "ranger",
+                    importance = "impurity",
+                    trControl = test_ctrl,
+                    verbose = T)
 test_train5 = train(target_vector~.,
                    data = test_thresh_df2,
                    method = "ranger",
@@ -106,21 +166,188 @@ test_train5 = train(target_vector~.,
                    verbose = T)
 
 # VarImp importance attr is a data frame by default, I wonder if I run like five models, can I use bind_cols to intelligently combine them
-#  IF the all the models use the same number of pairs, then bind_cols works perfectly, but if they're different then you're fucked. I wonder
+#  IF the all the models use the same number of pairs, in the same order, then bind_cols works perfectly, but if they're different then you're fucked.
 # if I need to enforce the each resampled uses the same number of variables.
 imp_test = varImp(test_train)
-
+imp_test2 = varImp(test_train2)
 imp_test5 = varImp(test_train5)
+imp_test5
 
-#
-imp_test
+imp_test$importance
+imp_test2$importance
+same_imps = imp_test$importance %>% full_join(imp_test2$importance)
+same_imps
 
-imp_test5$importance[1:7,]
-
-all_imps = bind_cols(imp_test$importance, imp_test2$importance, imp_test3$importance, imp_test4$importance, imp_test5$importance[1:7,])
-
+all_imps = bind_cols(imp_test$importance, imp_test5$importance[1:7,])
+imp_test5$importance
 all_imps
 
-# Need to get predictions/performance out of the ranger model (maybe conf matrices also) and figure out how to store the importance measures. Then I need to test the binding of the importance measures pretty exstensively to make sure that it's working correcty = prob will be a pain but oh well. Also should decide between impurity and permutation as importance metrics (https://alexisperrier.com/datascience/2015/08/27/feature-importance-random-forests-gini-accuracy.html)
+imp_df2 = imp_test$importance
+imp_df2$Pairs = row.names(imp_df2)
+
+imp_df = imp_test5$importance
+imp_df$Pairs = row.names(imp_df)
+
+imp_df3 = imp_test2$importance
+imp_df3$Pairs = row.names(imp_df3)
+
+# So the issue here is that I need 
+t_imp_df = as.data.frame(t(imp_test5$importance))
+t_imp_df2 = as.data.frame(t(imp_test$importance))
+t_imp_df3 = as.data.frame(t(imp_test2$importance))
+t_imp_df
+t_imp_df2
+t_imp_df3
+col_join = bind_rows(t_imp_df2, t_imp_df3)
+col_join
+col_join2 = bind_rows(col_join, t_imp_df)
+col_join2
+same_imps_join = imp_df2 %>% full_join(imp_df3, by = "Pairs")
+same_imps_join
+
+t(same_imps_join)
+
+
+all_imps_join = imp_df2 %>% full_join(imp_df, by = "Pairs")
+imp_df
+imp_df2
+all_imps_join
+row.names(all_imps_join)
+
+imp_df
+test_pred = predict(test_train$finalModel, test_thresh_df,
+                    type = 'response')
+get_rf_performance(predictions = as.factor(test_pred$predictions), 
+                   y_test = test_thresh_df[['target_vector']])
+
+test_pred$predictions %>% as.factor()
+test_thresh_df[['target_vector']]
+```
+
+
+#shit ass rf_train function of yore for reference
+```{r, ranger_cv_function}
+# Outer cross-validation loop is the training data (recombinant) and testing data is 
+# the clinical data
+
+# The secondary cross-validation loop k-fold cross-validation of the recombinant data. This 
+# includes validation of the model trained in the tertiary loop, and subsequent feature
+# selection
+
+# The tertiary cross-validation loop is k-fold CV via caret or glmnet
+
+recombinant_cv = function(clinical_df, recombinant_df, target, class_dist = F,
+                          model_type, tune_grid, train_control){
+  # I can pretty easily modify this function to be a generalized method by adding
+  # a tune grid and a model method argument.
+  # Class distance indicates whether the training and testing sets should be 
+  # modified to include the Mahalanobis class distances as additional predictors
+  confusion_list = list()
+  model_list = list()
+  mod_index = 1
+  
+  best_tunes = NULL
+  internal_pred_df = NULL
+  
+  if (class_dist == T){
+    class_distances = getCentroids(recombinant_df, clinical_df, target)
+    clinical_df = cbind(clinical_df, class_distances$test_distances)
+    recombinant_df = cbind(recombinant_df, class_distances$train_distances)
+  }
+  
+  x_clinical_test = clinical_df %>% dplyr::select(-target)
+  y_clinical_test = clinical_df$Variant
+  
+  global_train_folds = createFolds(recombinant_df[[target]], k=5)
+  
+  for (fold in 1:length(global_train_folds)){
+    global_train = recombinant_df[-global_train_folds[[fold]],]
+    global_test = recombinant_df[global_train_folds[[fold]],]
+    
+    x_global_train = global_train %>% dplyr::select(-target)
+    y_global_train = global_train[[target]]
+    
+    x_global_test = global_test %>% dplyr::select(-target)
+    y_global_test = global_test[[target]]
+    
+    internal_mod = train(x = x_global_train,
+                         y = y_global_train,
+                         # preProc = c("center", "scale"),
+                         method = model_type,
+                         trControl = train_control,
+                         metric = 'Kappa',
+                         tuneGrid = tune_grid)
+    
+    # Using the final model obtained in the cross validation, predict on the left out data
+    internal_preds = predict(internal_mod$finalModel, x_global_test, 
+                             type = 'response')
+    
+    accuracy = sum(ifelse(internal_preds$predictions == y_global_test,
+                          1, 0))/
+      length(y_global_test)
+    
+    tune_acc = cbind(internal_mod$bestTune, accuracy)
+    
+    # Adds best tuning parameters onto the tuning parameters dataframe
+    if (is.null(best_tunes)){
+      best_tunes = tune_acc
+    }
+    else {
+      best_tunes = rbind(best_tunes, tune_acc)
+    }
+    
+    confusionTable = confusionMatrix(data = internal_preds$prediction, 
+                                     reference = y_global_test)
+    model_list[[mod_index]] = c(model_list, internal_mod)
+    confusion_list[[mod_index]] = c(confusion_list, confusionTable)
+    mod_index = mod_index + 1
+  }
+  
+  x_recombinant_full = recombinant_df %>% dplyr::select(-target)
+  y_recombinant_full = recombinant_df[[target]]
+  
+  clinical_model = train(x = x_recombinant_full,
+                         y = y_recombinant_full,
+                         trControl = train_control,
+                         method = model_type,
+                         metric = 'Kappa',
+                         tuneGrid = tune_grid)
+  
+  clinical_preds = predict(clinical_model$finalModel, x_clinical_test,
+                           type = 'response')
+  
+  clinical_confusion = confusionMatrix(data = clinical_preds$predictions,
+                                       reference = y_clinical_test)
+  
+  return(list("model_list" = model_list,
+              "tuner" = best_tunes,
+              "confusionMats" = confusion_list,
+              "final_model" = c(clinical_model),
+              "testConfusionMat" = clinical_confusion))
+}
+subsetted_clinical_df = known_var_clinical_data %>% filter(`1B2` > 3.5)
+
+clinical_model_data = subsetted_clinical_df %>% dplyr::select(-`1B2`)
+
+tuneGrid = expand.grid(mtry = c(1:3),
+                       min.node.size = c(1:5),
+                       splitrule = 'gini')
+
+trainControl = trainControl(method = 'repeatedcv',
+                            number = 5,
+                            repeats = 3)
+# adaptive = list(min = 5, alpha = 0.05,
+#                 method = 'BT', complete = T),
+# search = 'random')
+
+rf_train = recombinant_cv(clinical_model_data, full_recombinant_data, "Variant",
+                          model_type = 'ranger', tune_grid = tuneGrid, 
+                          train_control = trainControl)
+
+
+whole_set_performance = rf_train$testConfusionMat
+whole_set_model = rf_train$final_model
+whole_set_performance
+whole_set_model
 ```
 
