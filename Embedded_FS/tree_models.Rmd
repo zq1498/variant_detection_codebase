@@ -1,0 +1,126 @@
+---
+title: "tree_models"
+output: html_document
+date: "2022-11-20"
+---
+
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+library(RColorBrewer)
+library(ggpubr)
+library(ranger)
+```
+
+
+```{r}
+# This file is within the Embedded_FS folder in the variant_detection_codebase
+# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
+# order to run in isolation, so I'm just setting the wd to the parent from which
+# I can call both files. The wd will be reset after this chunk anyway
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+# source("Embedded_FS/log_regression_accessory_functions.r")
+# source("Embedded_FS/lasso_resampling_functions.R")
+split_dab_df_list = main_preprocessor()
+```
+```{r MULTI FS RF FUNCTION PROTOTYPE}
+rf_control_function = function(df,
+                               target,
+                               k1,
+                               k2,
+                               num_repeats,
+                               threshold,
+                               n_top_features = c()
+){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+    
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = list()
+  global_conf_table_list = list()
+  
+  external_opt_model_list = list()
+  global_opt_model_list = list()
+  
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+    select(-c(Conc., Replicates))
+  
+  num_feature_array = c(1, n_top_features)
+  
+  for (rep in 1:num_repeats){
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    
+    for (global_fold in 1:k1) {
+      global_train = threshold_df[-global_kfold[[global_fold]], ]
+      global_test = threshold_df[global_kfold[[global_fold]], ]
+      
+      external_resample = external_rf_resample(
+        target = target,
+        dataset = global_train,
+        n_folds = k2,
+        transformation = c("scale", "center")
+      )
+    }
+  }
+}
+  
+  
+  
+test_df = split_dab_df_list[[6]]
+test_df2 = split_dab_df_list[[3]]
+test_df
+test_ctrl = trainControl(method = "repeatedcv",
+                         number = 5,
+                         repeats = 3
+                         )
+test_thresh_df = test_df %>% filter(Conc. > 0) %>% 
+    select(-c(Conc., Replicates))
+
+test_thresh_df2 = test_df2 %>% filter(Conc. > 0) %>% 
+    select(-c(Conc., Replicates))
+
+test_train = train(target_vector~.,
+                   data = test_thresh_df,
+                   method = "ranger",
+                   importance = "impurity",
+                   trControl = test_ctrl,
+                   verbose = T)
+
+test_train5 = train(target_vector~.,
+                   data = test_thresh_df2,
+                   method = "ranger",
+                   importance = "impurity",
+                   trControl = test_ctrl,
+                   verbose = T)
+
+# VarImp importance attr is a data frame by default, I wonder if I run like five models, can I use bind_cols to intelligently combine them
+#  IF the all the models use the same number of pairs, then bind_cols works perfectly, but if they're different then you're fucked. I wonder
+# if I need to enforce the each resampled uses the same number of variables.
+imp_test = varImp(test_train)
+
+imp_test5 = varImp(test_train5)
+
+#
+imp_test
+
+imp_test5$importance[1:7,]
+
+all_imps = bind_cols(imp_test$importance, imp_test2$importance, imp_test3$importance, imp_test4$importance, imp_test5$importance[1:7,])
+
+all_imps
+
+# Need to get predictions/performance out of the ranger model (maybe conf matrices also) and figure out how to store the importance measures. Then I need to test the binding of the importance measures pretty exstensively to make sure that it's working correcty = prob will be a pain but oh well. Also should decide between impurity and permutation as importance metrics (https://alexisperrier.com/datascience/2015/08/27/feature-importance-random-forests-gini-accuracy.html)
+```
+
