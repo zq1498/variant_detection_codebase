@@ -1,7 +1,6 @@
 # Imports -- straight copied from log regression parent script, should trim unnecessary imports
 library(tidyverse)
 library(caret)
-library(ggplot2)
 library(stats)
 library(psych)
 library(glmnet)
@@ -184,6 +183,7 @@ extract_performance_metrics = function(list_of_results,
 #'
 #' @return A plot that contains a subplot of bar charts describing the performance
 #' of each detection antibody
+#' @note this 
 multi_performance_viz = function(list_of_results,
                                  ordered_list_of_dabs,
                                  object_to_obtain = 'performance_metrics') {

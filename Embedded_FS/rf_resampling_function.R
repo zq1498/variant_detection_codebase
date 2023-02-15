@@ -91,9 +91,7 @@ multi_feature_global_rf_resampling = function(target,
                                               coef_df,
                                               conf_table_list,
                                               transformation) {
-  preprocess = preProcess(train, method = transformation)
-  train = predict(preprocess, train)
-  test = predict(preprocess, test)
+
   
   train_contrl = trainControl(method = "repeatedcv",
                               number = 5,
@@ -102,24 +100,24 @@ multi_feature_global_rf_resampling = function(target,
   model_formula = paste(target, "~", ".") %>% as.formula()
   
   for (n_features in num_feature_list){
+    preprocess = preProcess(train, method = transformation)
+    train = predict(preprocess, train)
+    test = predict(preprocess, test)
+    
     features = sorted_coefs$Pairs[1:n_features]
     downselect_train = train %>% select(target, features)
     downselect_test = test %>% select(target, features)
     
-    x_train = downselect_train %>% select(-target)
-    y_train = downselect_train[[target]]
-    print(x_train)
     x_test = downselect_test %>% select(-target)
-    print(x_test)
     y_test = downselect_test[[target]]
     
     rf_train = train(model_formula,
-                     data = train,
+                     data = downselect_train,
                      method = "ranger",
                      importance = "impurity",
                      trControl = train_contrl,
                      verbose = T)
-    
+
     opt_predict = predict(rf_train$finalModel, x_test,
                           type = 'response')
     opt_predict = opt_predict$predictions %>% as.factor()

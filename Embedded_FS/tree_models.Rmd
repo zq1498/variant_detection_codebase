@@ -29,7 +29,7 @@ library(ranger)
 setwd("..")
 source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
 source("Embedded_FS/rf_accessory_functions.R")
-source("Embedded_FS/rf_resampling_functions.R")
+source("Embedded_FS/rf_resampling_function.R")
 split_dab_df_list = main_preprocessor()
 ```
 
@@ -90,7 +90,7 @@ rf_control_function = function(df,
       max_features = length(avg_coefs$avg_importance)
       num_feature_array[1] = max_features
       num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
-      
+      print(num_feature_array)
       global_resample = multi_feature_global_rf_resampling(
         target = target,
         train = global_train,
@@ -106,15 +106,18 @@ rf_control_function = function(df,
       global_coef_df = global_resample$coef_df
       global_perf_df = global_resample$perf_df
   }
+  
   return(list("external_conf_tables" = external_conf_table_list,
               "external_coef_df" = external_coef_df,
               "external_performance" = external_perf_df,
               "global_conf_tables" = global_conf_table_list,
               "global_coef_df" = global_coef_df,
-              "global_performance" = global_perf_df
+              "global_performance" = global_perf_df,
+              "global_coef_plot" = global_coef_plot
               ))
 }
-  
+test_df = split_dab_df_list[[6]]
+
 resample_test = rf_control_function(df = test_df,
                                target = 'target_vector',
                                k1 = 5,
@@ -123,14 +126,71 @@ resample_test = rf_control_function(df = test_df,
                                threshold = 0,
                                n_top_features = c(10, 8, 4, 3)
                                )
-resample_test$external_coef_df
+test_coef_df = resample_test$global_coef_df 
+test_coef_df[is.na(test_coef_df)] = 0
+transpose_coef_df = as.data.frame(t(test_coef_df))
+transpose_coef_df$Pairs = row.names(transpose_coef_df)
+transpose_coef_df
+ 
+ggplot(transpose_coef_df, aes(x=Pairs))+
+  geom_bar(stat = "summary", fun = "mean")
 
+coef_plot = ggplot()
 test = data.frame("avg_coefs" = colMeans(resample_test$external_coef_df))
 test
 test %>% arrange(desc(avg_coefs))
 
 # Need to get predictions/performance out of the ranger model (maybe conf matrices also) and figure out how to store the importance measures. Then I need to test the binding of the importance measures pretty exstensively to make sure that it's working correcty = prob will be a pain but oh well. Also should decide between impurity and permutation as importance metrics (https://alexisperrier.com/datascience/2015/08/27/feature-importance-random-forests-gini-accuracy.html)
 ```
+```{r}
+multi_fs_parser_rf = function(mixed_performance_df, dab){
+  
+  std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
+  
+  fs_data = mixed_performance_df %>% filter(!global_iterations %in% c("Average","Stdev"))
+  
+  fs_data_avg = fs_data %>%
+    select(accuracy, kappa, Average_f1, num_features) %>% 
+    group_by(num_features) %>%
+    summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
+  
+  colnames(fs_data_avg) = c(
+    "num_features",
+    "Mean Accuracy",
+    "accuracy_se",
+    "Mean Kappa",
+    "kappa_se",
+    "Mean Average F1",
+    "Average_f1_se"
+  )
+  # Braindead way of doing this becuase gathers been deprecated for forever,
+  # pivot_longer would be better but I can't be bothered right now
+  fs_avg_long = fs_data_avg %>%
+    gather(mean_type, mean_val, "Mean Accuracy", "Mean Kappa", "Mean Average F1") %>%
+    gather(se_type, se_val, accuracy_se, kappa_se, Average_f1_se) %>% 
+    distinct(mean_val, .keep_all = T)
+  
+
+  viz = ggplot(fs_avg_long, aes(num_features, y = mean_val, colour=mean_type)) + 
+    geom_line() + 
+    geom_point() + 
+    geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
+    scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features),  by = -1))+
+    ylim(0.2, 1.0) +
+    labs(title = paste('Average Performance by number of pairs used in the model - ', dab),
+         x = "Number of antibody pairs in model",
+         y = "Mean performance metric value",
+         color = "Performance Metric") +
+    theme_classic()+
+    scale_color_brewer(palette = 'Dark2')
+  
+  return(list("avg_df" = fs_avg_long,
+              "plot" = viz))
+}
+
+```
+
+
 ```{r}
 # Test zone
 test_df = split_dab_df_list[[6]]
@@ -145,7 +205,7 @@ test_thresh_df = test_df %>% filter(Conc. > 0) %>%
 
 test_thresh_df2 = test_df2 %>% filter(Conc. > 0) %>% 
     select(-c(Conc., Replicates))
-
+test_train$coefnames
 test_train = train(target_vector~.,
                    data = test_thresh_df,
                    method = "ranger",
@@ -350,4 +410,78 @@ whole_set_model = rf_train$final_model
 whole_set_performance
 whole_set_model
 ```
+
+
+rf_resampling_function = function(target,
+                                  dataset,
+                                  n_folds,
+                                  perf_df,
+                                  coef_df,
+                                  conf_table_list,
+                                  transformation){
+  # Function is almost identical to the lasso resample function, with the 
+  # exception that instead of a model list we pass a data frame of coefficients.
+  # The model list in the lasso resampling function is essentially only used to
+  # generate coefficients, so this cuts out the middle man
+  model_formula = paste(target, "~", ".") %>% as.formula()
+  
+  folds = createFolds(dataset[[target]], k = n_folds)
+  
+  train_contrl = trainControl(method = "repeatedcv",
+                          number = 5,
+                          repeats = 3)
+  
+  for (fold in 1:n_folds){
+    train = dataset[-folds[[fold]], ]
+    test = dataset[folds[[fold]], ]
+    
+    preprocess = preProcess(train, method = transformation)
+    train = predict(preprocess, train)
+    test = predict(preprocess, test)
+    
+    x_train = train %>% select(-target)
+    y_train = train[[target]]
+    
+    x_test = test %>% select(-target)
+    y_test = test[[target]]
+    
+    rf_train = train(model_formula,
+                     data = x_train,
+                     method = "ranger",
+                     importance = "impurity",
+                     trControl = train_contrl,
+                     verbose = T)
+    
+    opt_predict = predict(rf_train$finalModel, x_test,
+                          type = 'response')
+    opt_predict = opt_predict$predictions %>% as.factor()
+    
+    perf_call = get_rf_performance(opt_predict, y_test)
+    
+    coef_imp = varImp(rf_train)
+    # Transposing the matrix is perfect, since it makes the row names the colnames
+    # which can then be passed to bind_rows. Bind_rows is ideal because it matches
+    # by column name.
+    coef_imp = as.data.frame(t(coef_imp$importance))
+    
+    if (is.null(perf_df)){
+      perf_df = perf_call$perf_metrics
+    }
+    else{
+      perf_df = bind_rows(perf_df, perf_call$perf_metrics)
+    }
+    
+    if (is.null(coef_df)){
+      coef_df = coef_imp
+    }
+    else{
+      coef_df = coef_df %>% bind_rows(coef_imp)
+    }
+    conf_table_list[[length(conf_table_list)+1]] = perf_call$conf_matrix
+    
+  }
+  return(list("perf_df" = perf_df,
+              "coef_df" = coef_df,
+              "conf_table" = conf_table_list))
+}
 
