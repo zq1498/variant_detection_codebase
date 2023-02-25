@@ -89,3 +89,88 @@ get_rf_performance = function(predictions, y_test){
                 "conf_matrix" = table))
   }
 }
+
+
+rf_coef_visualization = function(coef_df){
+  # Calculate the stderrs and averages, bind them to the original data set, then select them
+  # (I only bind to the data set so that it remains in the same data structure). Pivot them
+  # longer, then wider again so that I have a pairs, average, and se.
+  std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
+  summarized_coef_df = coef_df %>% 
+    group_by(n_features) %>% 
+    summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
+  
+  # From the summarized dataframe, select the means and add the number of features.
+  # Pivot the data frame to have pairs as a column, add a measure value, then pivot back.
+  # Remove the _mean from the end of each pair so that the pairs can be easily joined later.
+  coef_df_means = summarized_coef_df %>% 
+    select(ends_with("_mean")) %>% 
+    bind_cols("n_features" = as.factor(summarized_coef_df$n_features)) %>% 
+    pivot_longer(cols = -n_features,
+                 names_to = "Pairs",
+                 values_to = "Average") %>% 
+    bind_cols("Measure" = 'Average') %>% 
+    pivot_wider(names_from = Measure,
+                values_from = "Average") %>% 
+    mutate(across("Pairs", ~ gsub("_mean", "", .)))
+  
+  coef_df_se = summarized_coef_df %>% select(ends_with("_se")) %>% 
+    bind_cols("n_features" = as.factor(summarized_coef_df$n_features)) %>% 
+    pivot_longer(cols = -n_features,
+                 names_to = "Pairs",
+                 values_to = "Standard_errors") %>% 
+    bind_cols("Measure" = 'se') %>% 
+    pivot_wider(names_from = Measure,
+                values_from = "Standard_errors") %>% 
+    mutate(across("Pairs", ~ gsub("_se", "", .))) 
+  
+  modded_df = inner_join(coef_df_se, coef_df_means, by = c("Pairs", "n_features"))
+  
+  coef_plot = ggplot(modded_df, aes(x=reorder(Pairs, -Average), y=Average))+
+    geom_bar(stat='identity')+
+    geom_errorbar(aes(ymin=Average-se, ymax=Average+se), width=0.2)+
+    labs(x="Pair", y="Average Importance", title = "Average feature importance")+
+    facet_wrap(~fct_rev(n_features), scales = "free_x")+
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+  
+  return(coef_plot)
+}
+
+rf_performance_plotter = function(perf_df){
+  std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
+
+  fs_data = perf_df %>% 
+    select(accuracy, kappa, Average_f1, n_features) %>% 
+    group_by(n_features) %>% 
+    summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
+
+  colnames(fs_data) = c(
+    "num_features",
+    "Mean Accuracy",
+    "accuracy_se",
+    "Mean Kappa",
+    "kappa_se",
+    "Mean Average F1",
+    "Average_f1_se"
+  )
+  fs_avg_long = fs_data %>% 
+    gather(mean_type, mean_val, "Mean Accuracy", "Mean Kappa", "Mean Average F1") %>% 
+    gather(se_type, se_val, accuracy_se, kappa_se, Average_f1_se) %>% 
+    distinct(mean_val, .keep_all = T)
+
+  viz = ggplot(fs_avg_long, aes(num_features, y = mean_val, colour = mean_type)) +
+    geom_line()+
+    geom_point()+
+    geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
+    scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features), b = -1))+
+    ylim(0.2,1.0)+
+    labs(tite = 'Average Performace',
+         x = 'Number of antibody pairs in the model',
+         y = "Mean Performance Metric Value",
+         color = "Performance Metric")+
+    theme_classic()+
+    scale_color_brewer(palette = "Blues")
+  
+  return(list("avg_df" = fs_avg_long,
+              "plot" = viz))
+}

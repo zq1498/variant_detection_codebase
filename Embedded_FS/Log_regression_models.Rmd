@@ -157,36 +157,7 @@ glm_control_multi_fs = function(df,
               "sorted_coefs" = sorted_coefs$Pair
               ))
 }
-
-
-# Removed feature_selection boolean. Now if you don't want feature selection
-# just pass nothing to n_top_features, the default is a null list
-# mutli_fs_glm = glm_control_multi_fs(df = split_dab_df_list[[10]], 
-#                                target = "target_vector", 
-#                                k1 = 5, 
-#                                k2 = 5, 
-#                                num_repeats = 3, 
-#                                threshold = 0,
-#                                n_top_features = c(10, 8, 7, 6, 5, 4, 3)
-#                                )
-# split_dab_df_list[[10]]
-# split_dab_df_list
-# fs_viz = multi_fs_parser(mutli_fs_glm$global_performance, "dAb18")
-# fs_viz$plot
-# length(mutli_fs_glm$global_opt_models)
-# mutli_fs_glm$global_opt_models
-# coef_test = coef(mutli_fs_glm$global_opt_models[[1]])
-# length(coef_test[[1]])
-# length(coef(mutli_fs_glm$global_opt_models[[3]]))
-# 
-# # The number of features used in a model can be crudely obtained using -
-# # we essentially just get the coefs of a given object, take the number of coefs
-# coef_set = length(coef(mutli_fs_glm$global_opt_models[[1]])[[1]]) - 1
-# coef_set
-
 ```
-
-
 
 ```{r MODEL LOOP, warning=FALSE}
 all_models = model_call_loop(df_list = split_dab_df_list,

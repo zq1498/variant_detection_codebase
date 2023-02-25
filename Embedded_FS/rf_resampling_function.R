@@ -129,12 +129,16 @@ multi_feature_global_rf_resampling = function(target,
     # which can then be passed to bind_rows. Bind_rows is ideal because it matches
     # by column name.
     coef_imp = as.data.frame(t(coef_imp$importance))
+    coef_imp$n_features = n_features
+    
+    perf_dat = perf_call$perf_metrics
+    perf_dat$n_features = n_features
     
     if (is.null(perf_df)){
-      perf_df = perf_call$perf_metrics
+      perf_df = perf_dat
     }
     else{
-      perf_df = bind_rows(perf_df, perf_call$perf_metrics)
+      perf_df = bind_rows(perf_df, perf_dat)
     }
     
     if (is.null(coef_df)){
