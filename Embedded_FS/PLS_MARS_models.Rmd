@@ -1,0 +1,127 @@
+---
+title: "PLS_MARS_models"
+output: html_document
+date: "2022-11-20"
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+library(RColorBrewer)
+library(ggpubr)
+library(earth)
+```
+
+
+```{r}
+# This file is within the Embedded_FS folder in the variant_detection_codebase
+# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
+# order to run in isolation, so I'm just setting the wd to the parent from which
+# I can call both files. The wd will be reset after this chunk anyway
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Embedded_FS/rf_accessory_functions.R")
+source("Embedded_FS/rf_resampling_function.R")
+split_dab_df_list = main_preprocessor()
+```
+
+```{r}
+mars_control_function = function(df,
+                                 target,
+                                 k1,
+                                 k2,
+                                 num_repeats,
+                                 threshold,
+                                 n_top_features = c()
+){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = list()
+  global_conf_table_list = list()
+  
+  global_coef_df = NULL
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+    select(-c(Conc., Replicates))
+  
+  num_feature_array = c(1, n_top_features)
+  
+  for (rep in 1:num_repeats){
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    
+    for (global_fold in 1:k1){
+      external_coef_df = NULL
+      
+      global_train = threshold_df[-global_kfold[[global_fold]], ]
+      global_test = threshold_df[global_kfold[[global_fold]], ]
+      
+      external_resample = mars_resampling_function(
+        target = target,
+        dataset = global_train,
+        n_folds = k2,
+        perf_df = external_perf_df,
+        coef_df = external_coef_df,
+        conf_table_list = external_conf_table_list,
+        transformation = c("scale", "center")
+      )
+      
+      external_perf_df = external_resample$perf_df
+      external_coef_df = external_resample$coef_df
+      external_conf_table_list = external_resample$conf_table_list
+      
+      # Average importance metrics obtained from this global fold
+      
+      
+      # Subset features by importance metrics
+      
+      
+      # Global resample 
+      
+      
+      # Set global data frames to the output of the global resample
+    }
+  }
+  
+  return("yoyoyo")
+}
+```
+
+```{r}
+# Test zone
+test_df = split_dab_df_list[[10]]
+test_df = test_df %>% select(-c(Conc., Replicates))
+test_df
+earth_test = earth(target_vector~., data = test_df,
+                   glm = list(family=binomial), trace=1)
+
+summary(earth_test)
+plot(earth_test)
+t_imp = evimp(earth_test)
+as.tibble(as.matrix(t_imp))
+earth::plot
+```
+
+For a given set of input data, the following can increase the speed of the forward pass:
+(i) decreasing degree (because there are fewer combinations of terms to consider),
+(ii) decreasing nk (because there are fewer forward pass terms),
+(iii) increasing minspan (because fewer knots need to be considered),
+(iv) decreasing fast.k (because there are fewer potential parents to consider at each
+forward step),
+(v) increasing thresh (faster if there are fewer forward pass terms).
+The backward pass is normally much faster than the forward pass, unless pmethod =
+"exhaustive". Reducing nprune reduces exhaustive search time. One strategy is to
+first build a large model and then adjust pruning parameters such as nprune using
+update.earth.
+
+

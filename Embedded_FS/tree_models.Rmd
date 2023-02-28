@@ -1,0 +1,177 @@
+---
+title: "tree_models"
+output: html_document
+date: "2022-11-20"
+---
+
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+library(RColorBrewer)
+library(ggpubr)
+library(ranger)
+```
+
+
+```{r}
+# This file is within the Embedded_FS folder in the variant_detection_codebase
+# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
+# order to run in isolation, so I'm just setting the wd to the parent from which
+# I can call both files. The wd will be reset after this chunk anyway
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Embedded_FS/rf_accessory_functions.R")
+source("Embedded_FS/rf_resampling_function.R")
+split_dab_df_list = main_preprocessor()
+```
+
+```{r MULTI FS RF FUNCTION PROTOTYPE}
+rf_control_function = function(df,
+                               target,
+                               k1,
+                               k2,
+                               num_repeats,
+                               threshold,
+                               n_top_features = c()
+){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+    
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = list()
+  global_conf_table_list = list()
+  
+  global_coef_df = NULL
+  
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+    select(-c(Conc., Replicates))
+  
+  num_feature_array = c(1, n_top_features)
+  
+  for (rep in 1:num_repeats){
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    
+    for (global_fold in 1:k1) {
+      external_coef_df = NULL
+      global_train = threshold_df[-global_kfold[[global_fold]], ]
+      global_test = threshold_df[global_kfold[[global_fold]], ]
+      
+      external_resample = rf_resampling_function(
+        target = target,
+        dataset = global_train,
+        n_folds = k2,
+        perf_df = external_perf_df,
+        coef_df = external_coef_df,
+        conf_table_list = external_conf_table_list,
+        transformation = c("scale", "center")
+        )
+      external_perf_df = external_resample$perf_df
+      external_coef_df = external_resample$coef_df
+      external_conf_table_list = external_resample$conf_table_list
+    # Next I need to average the importance and identify the top n pairs
+    # SORTING COEFS AND DOWNSELECTING GLOBAL DF BASED ON EXTERNAL RESAMPLING
+    # Easier just to call this regardless since it's really fast   
+      avg_coefs = data.frame("avg_importance" = colMeans(external_coef_df))
+      avg_coefs = avg_coefs %>% arrange(desc(avg_importance))
+      avg_coefs$Pairs = row.names(avg_coefs)
+      
+      max_features = length(avg_coefs$avg_importance)
+      num_feature_array[1] = max_features
+      num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
+      print(num_feature_array)
+      print(num_feature_array)
+      global_resample = multi_feature_global_rf_resampling(
+        target = target,
+        train = global_train,
+        test = global_test,
+        sorted_coefs = avg_coefs,
+        num_feature_list = num_feature_array,
+        perf_df = global_perf_df,
+        coef_df = global_coef_df,
+        conf_table_list = global_conf_table_list,
+        transformation = c("scale", "center")
+      )
+      global_conf_table_list = global_resample$conf_table_list
+      global_coef_df = global_resample$coef_df
+      global_perf_df = global_resample$perf_df
+    }
+  }
+  
+  return(list("external_conf_tables" = external_conf_table_list,
+              "external_coef_df" = external_coef_df,
+              "external_performance" = external_perf_df,
+              "global_conf_tables" = global_conf_table_list,
+              "global_coef_df" = global_coef_df,
+              "global_performance" = global_perf_df
+              # "global_coef_plot" = global_coef_plot
+              ))
+}
+test_df = split_dab_df_list[[10]]
+
+resample_test = rf_control_function(df = test_df,
+                               target = 'target_vector',
+                               k1 = 5,
+                               k2 = 5,
+                               num_repeats = 2,
+                               threshold = 0,
+                               n_top_features = c(10, 8, 6, 4, 3)
+                               )
+
+
+
+rf_coef_plot = rf_coef_visualization(resample_test$global_coef_df)
+rf_coef_plot
+
+rf_perf_plot = rf_performance_plotter(resample_test$global_performance)
+rf_perf_plot$plot
+# Also should decide between impurity and permutation as importance metrics 
+# (https://alexisperrier.com/datascience/2015/08/27/feature-importance-random-forests-gini-accuracy.html)
+```
+
+```{r MODEL LOOP, warning=FALSE}
+all_models = model_call_loop(df_list = split_dab_df_list,
+                             model_type = 'rf_fs',
+                             k1 = 5,
+                             k2 = 5,
+                             num_repeats = 3,
+                             threshold = 0,
+                             n_top_features = c(10, 8, 7, 6, 5, 4, 3)
+)
+
+split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
+
+all_perf_results = sapply(all_models, function(x) x['global_performance'])
+all_coef_results = sapply(all_models, function(x) x['global_coef_df'])
+all_perf_results[[1]]
+for (perf_df in all_perf_results){
+  perf_viz = rf_performance_plotter(perf_df)
+  print(perf_viz$plot)
+}
+
+for (coef_df in all_coef_results){
+  coef_viz = rf_coef_visualization(coef_df)
+  print(coef_viz)
+}
+# dab_ind = 1
+# for (result in all_results){
+#   dab = split_dab_df_order[dab_ind]
+#   res_viz = multi_fs_parser(result, dab)
+#   print(res_viz$plot)
+#   ggsave(filename = paste("Performance over num_features (BoxCox): ", dab, ".png"),
+#          plot = res_viz$plot,
+#          dpi = 600)
+#   dab_ind = dab_ind+1
+# }
+```
+

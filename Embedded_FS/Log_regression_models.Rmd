@@ -16,6 +16,7 @@ library(gridExtra)
 library(doParallel)
 library(roxygen2)
 library(RColorBrewer)
+library(ggpubr)
 ```
 
 ```{r}
@@ -28,7 +29,6 @@ source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
 source("Embedded_FS/log_regression_accessory_functions.r")
 source("Embedded_FS/lasso_resampling_functions.R")
 split_dab_df_list = main_preprocessor()
-glm_test_df = split_dab_df_list[[3]]
 ```
 
 ```{r MULTI FS GLM FUNCTION, warning = FALSE}
@@ -77,7 +77,7 @@ glm_control_multi_fs = function(df,
         perf_df = external_perf_df,
         model_list = external_opt_model_list,
         conf_table_list = external_conf_table_list,
-        transformation = c("scale", "center")
+        transformation = c("scale", "center", "BoxCox")
       )
       external_conf_table_list = external_resample$conf_table_list
       external_opt_model_list = external_resample$opt_model_list
@@ -112,7 +112,7 @@ glm_control_multi_fs = function(df,
         perf_df = global_perf_df,
         model_list = global_opt_model_list,
         conf_table_list = global_conf_table_list,
-        transformation = c("scale", "center")
+        transformation = c("scale", "center", "BoxCox")
       )
       global_conf_table_list = global_resample$conf_table_list
       global_opt_model_list = global_resample$opt_model_list
@@ -157,25 +157,7 @@ glm_control_multi_fs = function(df,
               "sorted_coefs" = sorted_coefs$Pair
               ))
 }
-
-
-# Removed feature_selection boolean. Now if you don't want feature selection
-# just pass nothing to n_top_features, the default is a null list
-mutli_fs_glm = glm_control_multi_fs(df = split_dab_df_list[[10]], 
-                               target = "target_vector", 
-                               k1 = 5, 
-                               k2 = 5, 
-                               num_repeats = 3, 
-                               threshold = 0,
-                               n_top_features = c(10, 8, 7, 6, 5, 4, 3)
-                               )
-split_dab_df_list[[10]]
-split_dab_df_list
-fs_viz = multi_fs_parser(mutli_fs_glm$global_performance, "dAb18")
-fs_viz$plot
 ```
-
-
 
 ```{r MODEL LOOP, warning=FALSE}
 all_models = model_call_loop(df_list = split_dab_df_list,
@@ -190,18 +172,51 @@ all_models = model_call_loop(df_list = split_dab_df_list,
 split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
 
 all_results = sapply(all_models, function(x) x['global_performance'])
-all_results
 
 dab_ind = 1
 for (result in all_results){
   dab = split_dab_df_order[dab_ind]
   res_viz = multi_fs_parser(result, dab)
   print(res_viz$plot)
-  ggsave(filename = paste("Performance over num_features: ", dab, ".png"),
+  ggsave(filename = paste("Performance over num_features (BoxCox): ", dab, ".png"),
          plot = res_viz$plot,
          dpi = 600)
   dab_ind = dab_ind+1
 }
 ```
 
+```{r}
+# I literally want to murder this stupid function
+# The only way it actually makes sense is to include it in the global resample function
+# otherwise you have no fucking clue what number of pairs you have, what dab you're plotting
+# etc. It's such a pain that I'd rather label 100 plots manually than figure it out
+coef_parser = function(list_of_results) {
+  all_model_list = sapply(list_of_results, function(x) x['global_opt_models'])
+  save_index = 0
+  for (single_dab_models in all_model_list) {
+    sorted_model_list = list()
+    # This is true whenever we have 5 global folds and 3 total repeats
+    num_features_list = length(single_dab_models) / 15
+    for (ind in 1:num_features_list) {
+      ind_max = length(single_dab_models) - (num_features_list - ind)
+      seq_ind = seq(from = ind,
+                    to = ind_max,
+                    by = num_features_list)
+      temp_model_list = single_dab_models[seq_ind]
+      sorted_model_list[[ind]] = temp_model_list
+    }
+    sublist_ind = 1
+    plot_list = list()
+    for (sublist in sorted_model_list) {
+      coef_p = get_cv_coefs(sublist, plot = T)
+      ggsave(filename = paste("lasso_fs_pair_subsets_", save_index, ".png"), plot = coef_p$coef_plot,
+            dpi = 600)
+      print(coef_p$coef_plot)
+      save_index = save_index + 1
+    }
+  }
+}
+
+coef_parser(all_models)
+```
 
