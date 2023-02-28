@@ -32,7 +32,7 @@ source("Embedded_FS/rf_resampling_function.R")
 split_dab_df_list = main_preprocessor()
 ```
 
-```{r}
+```{r MARS}
 mars_control_function = function(df,
                                  target,
                                  k1,
@@ -66,14 +66,15 @@ mars_control_function = function(df,
       global_train = threshold_df[-global_kfold[[global_fold]], ]
       global_test = threshold_df[global_kfold[[global_fold]], ]
       
-      external_resample = mars_resampling_function(
+      external_resample = rf_resampling_function(
         target = target,
         dataset = global_train,
         n_folds = k2,
         perf_df = external_perf_df,
         coef_df = external_coef_df,
         conf_table_list = external_conf_table_list,
-        transformation = c("scale", "center")
+        transformation = c("scale", "center"),
+        model_type = "mars"
       )
       
       external_perf_df = external_resample$perf_df
@@ -81,36 +82,68 @@ mars_control_function = function(df,
       external_conf_table_list = external_resample$conf_table_list
       
       # Average importance metrics obtained from this global fold
-      
-      
+      avg_coefs = data.frame("avg_importance" = colMeans(external_coef_df))
+      avg_coefs = avg_coefs %>% arrange(desc(avg_importance))
+      avg_coefs$Pairs = row.names(avg_coefs)
+
       # Subset features by importance metrics
-      
+      max_features = length(avg_coefs$avg_importance)
+      num_feature_array[1] = max_features
+      num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
       
       # Global resample 
-      
+      global_resample = multi_feature_global_rf_resampling(
+        target = target,
+        train = global_train,
+        test = global_test,
+        sorted_coefs = avg_coefs,
+        num_feature_list = num_feature_array,
+        perf_df = global_perf_df,
+        coef_df = global_coef_df,
+        conf_table_list = global_conf_table_list,
+        transformation = c("scale", "center"),
+        model_type = 'mars'
+      )
       
       # Set global data frames to the output of the global resample
+      global_conf_table_list = global_resample$conf_table_list
+      global_coef_df = global_resample$coef_df
+      global_perf_df = global_resample$perf_df
     }
   }
-  
-  return("yoyoyo")
+  return(list("external_conf_tables" = external_conf_table_list,
+              "external_coef_df" = external_coef_df,
+              "external_performance" = external_perf_df,
+              "global_conf_tables" = global_conf_table_list,
+              "global_coef_df" = global_coef_df,
+              "global_performance" = global_perf_df
+              # "global_coef_plot" = global_coef_plot
+              ))
 }
+
+f_test_df = split_dab_df_list[[10]]
+mars_test = mars_control_function(df = f_test_df,
+                               target = 'target_vector',
+                               k1 = 5,
+                               k2 = 5,
+                               num_repeats = 2,
+                               threshold = 0,
+                               n_top_features = c(10, 8, 6, 4, 3))
+mars_test$global_performance
+
+# MARS/EARTH models are entirely compatible with slightly modified rf specific files
+# but it may be worth adding the feature importance metric to the y axis, since
+# in rfs its impurity, but it's generalized cross validated error with MARS
+
+# Note that I tried to use bagEarth to maybe stabilize the importance metrics
+# but I think the code may be bugged, you get an error when trying to use varImp
+# with a bagEarth object
+coef_viz = rf_coef_visualization(mars_test$global_coef_df)
+rf_performance_plotter(mars_test$global_performance)
+coef_viz
 ```
 
-```{r}
-# Test zone
-test_df = split_dab_df_list[[10]]
-test_df = test_df %>% select(-c(Conc., Replicates))
-test_df
-earth_test = earth(target_vector~., data = test_df,
-                   glm = list(family=binomial), trace=1)
 
-summary(earth_test)
-plot(earth_test)
-t_imp = evimp(earth_test)
-as.tibble(as.matrix(t_imp))
-earth::plot
-```
 
 For a given set of input data, the following can increase the speed of the forward pass:
 (i) decreasing degree (because there are fewer combinations of terms to consider),
@@ -123,5 +156,142 @@ The backward pass is normally much faster than the forward pass, unless pmethod 
 "exhaustive". Reducing nprune reduces exhaustive search time. One strategy is to
 first build a large model and then adjust pruning parameters such as nprune using
 update.earth.
+```{r warning=FALSE}
+# This fails sometimes when a data frame is created that has 1 row and 0 columns
+# so when I try to bind the rows, then it throws an error 
+# I think I can either add a conditional that handles this or I can just run this
+# with only the better pairs. I think that I can recreate this problem by running
+# only the dAb7 dataset
+all_mars_results = model_call_loop(df_list = split_dab_df_list,
+                                   model_type = 'mars')
+
+# for (perf_df in all_perf_results){
+#   perf_viz = rf_performance_plotter(perf_df)
+#   print(perf_viz$plot)
+# }
+# 
+# for (coef_df in all_coef_results){
+#   coef_viz = rf_coef_visualization(coef_df)
+#   print(coef_viz)
+# }
+```
+```{r PLS}
+mars_control_function = function(df,
+                                 target,
+                                 k1,
+                                 k2,
+                                 num_repeats,
+                                 threshold,
+                                 n_top_features = c()
+){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
+  external_perf_df = NULL
+  global_perf_df = NULL
+  
+  external_conf_table_list = list()
+  global_conf_table_list = list()
+  
+  global_coef_df = NULL
+  
+  threshold_df = df %>% filter(Conc. > threshold) %>% 
+    select(-c(Conc., Replicates))
+  
+  num_feature_array = c(1, n_top_features)
+  
+  for (rep in 1:num_repeats){
+    global_kfold = createFolds(threshold_df[[target]], k = k1)
+    
+    for (global_fold in 1:k1){
+      external_coef_df = NULL
+      
+      global_train = threshold_df[-global_kfold[[global_fold]], ]
+      global_test = threshold_df[global_kfold[[global_fold]], ]
+      
+      external_resample = rf_resampling_function(
+        target = target,
+        dataset = global_train,
+        n_folds = k2,
+        perf_df = external_perf_df,
+        coef_df = external_coef_df,
+        conf_table_list = external_conf_table_list,
+        transformation = c("scale", "center"),
+        model_type = "mars"
+      )
+      
+      external_perf_df = external_resample$perf_df
+      external_coef_df = external_resample$coef_df
+      external_conf_table_list = external_resample$conf_table_list
+      
+      # Average importance metrics obtained from this global fold
+      avg_coefs = data.frame("avg_importance" = colMeans(external_coef_df))
+      avg_coefs = avg_coefs %>% arrange(desc(avg_importance))
+      avg_coefs$Pairs = row.names(avg_coefs)
+
+      # Subset features by importance metrics
+      max_features = length(avg_coefs$avg_importance)
+      num_feature_array[1] = max_features
+      num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
+      
+      # Global resample 
+      global_resample = multi_feature_global_rf_resampling(
+        target = target,
+        train = global_train,
+        test = global_test,
+        sorted_coefs = avg_coefs,
+        num_feature_list = num_feature_array,
+        perf_df = global_perf_df,
+        coef_df = global_coef_df,
+        conf_table_list = global_conf_table_list,
+        transformation = c("scale", "center"),
+        model_type = 'mars'
+      )
+      
+      # Set global data frames to the output of the global resample
+      global_conf_table_list = global_resample$conf_table_list
+      global_coef_df = global_resample$coef_df
+      global_perf_df = global_resample$perf_df
+    }
+  }
+  return(list("external_conf_tables" = external_conf_table_list,
+              "external_coef_df" = external_coef_df,
+              "external_performance" = external_perf_df,
+              "global_conf_tables" = global_conf_table_list,
+              "global_coef_df" = global_coef_df,
+              "global_performance" = global_perf_df
+              # "global_coef_plot" = global_coef_plot
+              ))
+}
+print('fds')
+```
+
+```{r}
+test_df = f_test_df %>% select(-c(Replicates, Conc.))
+trCont = trainControl(method = "repeatedcv",
+                      repeats = 3,
+                      number = 5)
+
+pls_t = train(target_vector~.,
+              data = test_df,
+              trControl = trCont,
+              method = 'pls')
+
+spls_t = train(target_vector~.,
+              data = test_df,
+              trControl = trCont,
+              method = 'spls')
+# Need to get the average and absolute value of these, since it's for each
+varImp(pls_t)
+varImp(spls_t)
+```
+
+
+
+
+
+
+
+
 
 

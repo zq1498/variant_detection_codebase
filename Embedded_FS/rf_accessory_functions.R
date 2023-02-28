@@ -149,6 +149,7 @@ rf_coef_visualization = function(coef_df){
 
 
 rf_performance_plotter = function(perf_df){
+  
   blue_palette = c(
     `lighter_blue` = "#06a8f9",
       `ligh_blue` = "#0577B1",
@@ -156,8 +157,8 @@ rf_performance_plotter = function(perf_df){
       `dark_blue` = "#012169"
   ) 
   
-  dab_check = regexpr(".+(?=_)",modded_df$Pairs, perl = T)
-  dab_name = unique(regmatches(modded_df$Pairs, dab_check))
+  # dab_check = regexpr(".+(?=_)",modded_df$Pairs, perl = T)
+  # dab_name = unique(regmatches(modded_df$Pairs, dab_check))
 
   std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
 
@@ -186,7 +187,7 @@ rf_performance_plotter = function(perf_df){
     geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
     scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features), b = -1))+
     ylim(0.2,1.0)+
-    labs(tite = paste('Average Performace: ', dab_name),
+    labs(tite = paste('Average Performace by number of features'),
          x = 'Number of antibody pairs in the model',
          y = "Mean Performance Metric Value",
          color = "Performance Metric")+
@@ -215,7 +216,20 @@ model_call_loop = function(df_list,
                                                                     k2 = 5, 
                                                                     num_repeats = 3, 
                                                                     threshold = 0,
-                                                                    n_top_features = c(10, 8, 7, 6, 5, 4, 3))
+                                                                    n_top_features = c(10, 8, 7, 6, 5, 4, 3)
+                                                                   )
+    }
+  }
+  else if (model_type == 'mars'){
+    for (df in df_list){
+      result_list[[length(result_list) + 1]] = mars_control_function(df = df, 
+                                                                   target = "target_vector", 
+                                                                   k1 = 5, 
+                                                                   k2 = 5, 
+                                                                   num_repeats = 3, 
+                                                                   threshold = 0,
+                                                                   n_top_features = c(10, 8, 7, 6, 5, 4, 3)
+                                                                   )
     }
   }
   return(result_list)

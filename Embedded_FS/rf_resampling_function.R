@@ -14,7 +14,8 @@ rf_resampling_function = function(target,
                                   perf_df,
                                   coef_df,
                                   conf_table_list,
-                                  transformation){
+                                  transformation,
+                                  model_type){
   # Function is almost identical to the lasso resample function, with the 
   # exception that instead of a model list we pass a data frame of coefficients.
   # The model list in the lasso resampling function is essentially only used to
@@ -41,25 +42,47 @@ rf_resampling_function = function(target,
     x_test = test %>% select(-target)
     y_test = test[[target]]
     
-    rf_train = train(model_formula,
-                     data = train,
-                     method = "ranger",
-                     importance = "impurity",
-                     trControl = train_contrl,
-                     verbose = T)
+    if (model_type == "rf"){
+      trained_model = train(model_formula,
+                       data = train,
+                       method = "ranger",
+                       importance = "impurity",
+                       trControl = train_contrl,
+                       verbose = T)
+      
+      opt_predict = predict(trained_model$finalModel, x_test,
+                            type = 'response')
+      opt_predict = opt_predict$predictions %>% as.factor()
+    }
     
-    opt_predict = predict(rf_train$finalModel, x_test,
-                          type = 'response')
-    opt_predict = opt_predict$predictions %>% as.factor()
+    else if (model_type == "mars"){
+      trained_model = train(model_formula,
+                         data = train,
+                         method = "earth",
+                         trControl = train_contrl)
+      
+      opt_predict = predict(trained_model, x_test,
+                            type = 'raw')
+    }
     
+    else if (model_type == 'pls'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = "plsda",
+                            trControl = train_contrl)
+      
+      opt_predict = predict(trained_model, x_test,
+                            type = "class")
+    }
     perf_call = get_rf_performance(opt_predict, y_test)
     
-    coef_imp = varImp(rf_train)
+    coef_imp = varImp(trained_model)
+    
     # Transposing the matrix is perfect, since it makes the row names the colnames
     # which can then be passed to bind_rows. Bind_rows is ideal because it matches
     # by column name.
     coef_imp = as.data.frame(t(coef_imp$importance))
-    
+    print(coef_imp)
     if (is.null(perf_df)){
       perf_df = perf_call$perf_metrics
     }
@@ -71,6 +94,7 @@ rf_resampling_function = function(target,
       coef_df = coef_imp
     }
     else{
+      print(coef_df)
       coef_df = coef_df %>% bind_rows(coef_imp)
     }
     conf_table_list[[length(conf_table_list)+1]] = perf_call$conf_matrix
@@ -90,7 +114,8 @@ multi_feature_global_rf_resampling = function(target,
                                               perf_df,
                                               coef_df,
                                               conf_table_list,
-                                              transformation) {
+                                              transformation,
+                                              model_type) {
 
   
   train_contrl = trainControl(method = "repeatedcv",
@@ -111,20 +136,31 @@ multi_feature_global_rf_resampling = function(target,
     x_test = downselect_test %>% select(-target)
     y_test = downselect_test[[target]]
     
-    rf_train = train(model_formula,
+    if (model_type == 'rf'){
+      trained_model = train(model_formula,
                      data = downselect_train,
                      method = "ranger",
                      importance = "impurity",
                      trControl = train_contrl,
                      verbose = T)
 
-    opt_predict = predict(rf_train$finalModel, x_test,
+    opt_predict = predict(trained_model$finalModel, x_test,
                           type = 'response')
     opt_predict = opt_predict$predictions %>% as.factor()
-
+    }
+    
+    else if (model_type == 'mars'){
+      trained_model = train(model_formula,
+                            data = downselect_train,
+                            method = 'earth',
+                            trControl = train_contrl)
+      
+      opt_predict = predict(trained_model, x_test, type = 'raw')
+    }
+    
     perf_call = get_rf_performance(opt_predict, y_test)
     
-    coef_imp = varImp(rf_train)
+    coef_imp = varImp(trained_model)
     # Transposing the matrix is perfect, since it makes the row names the colnames
     # which can then be passed to bind_rows. Bind_rows is ideal because it matches
     # by column name.

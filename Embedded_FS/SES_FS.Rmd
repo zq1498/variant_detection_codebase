@@ -1,0 +1,26 @@
+---
+title: "SES_fs"
+output: html_document
+date: "2023-02-28"
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+library(RColorBrewer)
+library(ggpubr)
+library(mxm)
+```
+
+
+```{r}
+# Implementing statistically equivalent signature with my data
+```
+

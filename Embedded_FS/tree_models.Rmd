@@ -40,7 +40,8 @@ rf_control_function = function(df,
                                k2,
                                num_repeats,
                                threshold,
-                               n_top_features = c()
+                               n_top_features = c(),
+                               model_type
 ){
   cl = makeCluster(6)
   registerDoParallel(cl)
@@ -74,7 +75,8 @@ rf_control_function = function(df,
         perf_df = external_perf_df,
         coef_df = external_coef_df,
         conf_table_list = external_conf_table_list,
-        transformation = c("scale", "center")
+        transformation = c("scale", "center"),
+        model_type = "rf"
         )
       external_perf_df = external_resample$perf_df
       external_coef_df = external_resample$coef_df
@@ -100,7 +102,8 @@ rf_control_function = function(df,
         perf_df = global_perf_df,
         coef_df = global_coef_df,
         conf_table_list = global_conf_table_list,
-        transformation = c("scale", "center")
+        transformation = c("scale", "center"),
+        model_type = 'rf'
       )
       global_conf_table_list = global_resample$conf_table_list
       global_coef_df = global_resample$coef_df
@@ -127,7 +130,7 @@ resample_test = rf_control_function(df = test_df,
                                threshold = 0,
                                n_top_features = c(10, 8, 6, 4, 3)
                                )
-
+resample_test$global_performance
 
 
 rf_coef_plot = rf_coef_visualization(resample_test$global_coef_df)
