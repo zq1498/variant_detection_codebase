@@ -51,7 +51,6 @@ rf_control_function = function(df,
   external_conf_table_list = list()
   global_conf_table_list = list()
   
-  external_coef_df = NULL
   global_coef_df = NULL
   
   
@@ -64,6 +63,7 @@ rf_control_function = function(df,
     global_kfold = createFolds(threshold_df[[target]], k = k1)
     
     for (global_fold in 1:k1) {
+      external_coef_df = NULL
       global_train = threshold_df[-global_kfold[[global_fold]], ]
       global_test = threshold_df[global_kfold[[global_fold]], ]
       
@@ -125,7 +125,7 @@ resample_test = rf_control_function(df = test_df,
                                k2 = 5,
                                num_repeats = 2,
                                threshold = 0,
-                               n_top_features = c(10, 8, 4, 3)
+                               n_top_features = c(10, 8, 6, 4, 3)
                                )
 
 
@@ -133,10 +133,45 @@ resample_test = rf_control_function(df = test_df,
 rf_coef_plot = rf_coef_visualization(resample_test$global_coef_df)
 rf_coef_plot
 
-rf_performance_plotter(resample_test$global_performance)
-
+rf_perf_plot = rf_performance_plotter(resample_test$global_performance)
+rf_perf_plot$plot
 # Also should decide between impurity and permutation as importance metrics 
 # (https://alexisperrier.com/datascience/2015/08/27/feature-importance-random-forests-gini-accuracy.html)
 ```
 
+```{r MODEL LOOP, warning=FALSE}
+all_models = model_call_loop(df_list = split_dab_df_list,
+                             model_type = 'rf_fs',
+                             k1 = 5,
+                             k2 = 5,
+                             num_repeats = 3,
+                             threshold = 0,
+                             n_top_features = c(10, 8, 7, 6, 5, 4, 3)
+)
+
+split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
+
+all_perf_results = sapply(all_models, function(x) x['global_performance'])
+all_coef_results = sapply(all_models, function(x) x['global_coef_df'])
+all_perf_results[[1]]
+for (perf_df in all_perf_results){
+  perf_viz = rf_performance_plotter(perf_df)
+  print(perf_viz$plot)
+}
+
+for (coef_df in all_coef_results){
+  coef_viz = rf_coef_visualization(coef_df)
+  print(coef_viz)
+}
+# dab_ind = 1
+# for (result in all_results){
+#   dab = split_dab_df_order[dab_ind]
+#   res_viz = multi_fs_parser(result, dab)
+#   print(res_viz$plot)
+#   ggsave(filename = paste("Performance over num_features (BoxCox): ", dab, ".png"),
+#          plot = res_viz$plot,
+#          dpi = 600)
+#   dab_ind = dab_ind+1
+# }
+```
 

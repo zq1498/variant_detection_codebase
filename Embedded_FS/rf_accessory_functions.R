@@ -126,17 +126,39 @@ rf_coef_visualization = function(coef_df){
   
   modded_df = inner_join(coef_df_se, coef_df_means, by = c("Pairs", "n_features"))
   
+  # Grabbing dAb names from modded_df and stripping them for nice plotting
+  dab_name = regexpr(".+(?=_)",modded_df$Pairs, perl = T)
+  dab_name = unique(regmatches(modded_df$Pairs, dab_name))
+  
+  strip_cAbs = gsub("^[^c]*","",modded_df$Pairs, perl = T) #!(c.*)
+  modded_df$Pairs = strip_cAbs
+  
   coef_plot = ggplot(modded_df, aes(x=reorder(Pairs, -Average), y=Average))+
-    geom_bar(stat='identity')+
+    geom_bar(stat='identity', fill = "#0577B1")+
     geom_errorbar(aes(ymin=Average-se, ymax=Average+se), width=0.2)+
-    labs(x="Pair", y="Average Importance", title = "Average feature importance")+
+    labs(x="Pair", y="Average Importance", 
+         title = paste("Average feature importance:", dab_name))+
     facet_wrap(~fct_rev(n_features), scales = "free_x")+
+    theme_classic()+
     theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+
   
   return(coef_plot)
 }
 
+
+
 rf_performance_plotter = function(perf_df){
+  blue_palette = c(
+    `lighter_blue` = "#06a8f9",
+      `ligh_blue` = "#0577B1",
+      `blue` = "#005587",
+      `dark_blue` = "#012169"
+  ) 
+  
+  dab_check = regexpr(".+(?=_)",modded_df$Pairs, perl = T)
+  dab_name = unique(regmatches(modded_df$Pairs, dab_check))
+
   std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
 
   fs_data = perf_df %>% 
@@ -164,13 +186,38 @@ rf_performance_plotter = function(perf_df){
     geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
     scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features), b = -1))+
     ylim(0.2,1.0)+
-    labs(tite = 'Average Performace',
+    labs(tite = paste('Average Performace: ', dab_name),
          x = 'Number of antibody pairs in the model',
          y = "Mean Performance Metric Value",
          color = "Performance Metric")+
     theme_classic()+
-    scale_color_brewer(palette = "Blues")
+    scale_color_manual(values = c(blue_palette[[1]], blue_palette[[3]], blue_palette[[4]]))
   
   return(list("avg_df" = fs_avg_long,
               "plot" = viz))
 }
+
+
+model_call_loop = function(df_list,
+                           model_type,
+                           k1 = 5,
+                           k2 = 5,
+                           num_repeats = 3,
+                           threshold = 0,
+                           n_top_features = c()
+){
+  result_list = list()
+  if (model_type == "rf_fs"){
+    for (df in df_list){
+      result_list[[length(result_list) + 1]] = rf_control_function(df = df, 
+                                                                    target = "target_vector", 
+                                                                    k1 = 5, 
+                                                                    k2 = 5, 
+                                                                    num_repeats = 3, 
+                                                                    threshold = 0,
+                                                                    n_top_features = c(10, 8, 7, 6, 5, 4, 3))
+    }
+  }
+  return(result_list)
+}
+
