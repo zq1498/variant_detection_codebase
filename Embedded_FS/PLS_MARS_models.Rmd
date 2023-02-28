@@ -129,7 +129,6 @@ mars_test = mars_control_function(df = f_test_df,
                                num_repeats = 2,
                                threshold = 0,
                                n_top_features = c(10, 8, 6, 4, 3))
-mars_test$global_performance
 
 # MARS/EARTH models are entirely compatible with slightly modified rf specific files
 # but it may be worth adding the feature importance metric to the y axis, since
