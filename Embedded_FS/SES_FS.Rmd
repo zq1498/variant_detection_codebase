@@ -16,11 +16,60 @@ library(doParallel)
 library(roxygen2)
 library(RColorBrewer)
 library(ggpubr)
-library(mxm)
+library(MXM)
 ```
 
 
 ```{r}
 # Implementing statistically equivalent signature with my data
+test_df = split_dab_df_list[[10]] %>% select(-c(Conc., Replicates)) %>% mutate_at("target_vector", as.factor)
+
+test_folds = createFolds(test_df$target_vector, k = 5)
+
+mxm_train = test_df[-test_folds[[1]], ]
+mxm_test = test_df[test_folds[[1]], ]
+
+mxm_default_mod = SES(
+  target = "target_vector",
+  dataset = mxm_train,
+  max_k = 3,
+  threshold = 0.1,
+  test = 'testIndMultinom',
+  ini = NULL,
+  wei = NULL,
+  user_test = NULL,
+  hash = TRUE,
+  hashObject = NULL,
+  ncores = 1
+)
+
+mxm_default_mod@selectedVars
+SelectedVars_names<-colnames(mxm_train[mxm_default_mod@selectedVars])
+SelectedVars_names
+
+SelectedVars_ordered <- colnames(mxm_train[mxm_default_mod@selectedVarsOrder])
+SelectedVars_ordered
+
+mxm_default_mod@signatures
+
+perm_ses_model = perm.ses(target = "target_vector",
+                          dataset = mxm_train,
+                          R = 999,
+                          max_k = 3,
+                          threshold = 0.05,
+                          test = 'permMultinom',
+                          ini = NULL,
+                          wei = NULL,
+                          user_test = NULL,
+                          hash = FALSE,
+                          hashObject = NULL,
+                          ncores = 1)
+
+# cv.ses
+mxm_mod_ses_1 = ses.model(target = as.matrix(mxm_train$target_vector),
+                          dataset = as.matrix(mxm_train),
+                          wei = NULL,
+                          sesObject = mxm_default_mod,
+                          test = 'testIndMultinom')
 ```
 
