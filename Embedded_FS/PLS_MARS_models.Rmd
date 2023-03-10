@@ -30,9 +30,13 @@ source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
 source("Embedded_FS/rf_accessory_functions.R")
 source("Embedded_FS/rf_resampling_function.R")
 split_dab_df_list = main_preprocessor()
+# dAb4, dAb7, and dAb11 show consistently poor performance so I remove them from the list
+# They also sometimes create missing value errors for importance metrics
+# dAb4 is the 1st index, dAb 7 is the 4th index, and dAb11 is the 6th index  
+split_dab_df_list = split_dab_df_list[-c(1, 4, 6)]
 ```
 
-```{r MARS}
+```{r MARS, warning=FALSE}
 mars_control_function = function(df,
                                  target,
                                  k1,
@@ -121,7 +125,8 @@ mars_control_function = function(df,
               ))
 }
 
-f_test_df = split_dab_df_list[[10]]
+f_test_df = split_dab_df_list[[3]]
+f_test_df
 mars_test = mars_control_function(df = f_test_df,
                                target = 'target_vector',
                                k1 = 5,
@@ -129,6 +134,10 @@ mars_test = mars_control_function(df = f_test_df,
                                num_repeats = 2,
                                threshold = 0,
                                n_top_features = c(10, 8, 6, 4, 3))
+
+mars_test$global_coef_df
+rf_coef_visualization(mars_test$global_coef_df)
+rf_performance_plotter(mars_test$global_performance)
 
 # MARS/EARTH models are entirely compatible with slightly modified rf specific files
 # but it may be worth adding the feature importance metric to the y axis, since
@@ -164,18 +173,24 @@ update.earth.
 all_mars_results = model_call_loop(df_list = split_dab_df_list,
                                    model_type = 'mars')
 
-# for (perf_df in all_perf_results){
-#   perf_viz = rf_performance_plotter(perf_df)
-#   print(perf_viz$plot)
-# }
-# 
-# for (coef_df in all_coef_results){
-#   coef_viz = rf_coef_visualization(coef_df)
-#   print(coef_viz)
-# }
+all_perf_results = sapply(all_mars_results, function(x) x['global_performance'])
+all_coef_results = sapply(all_mars_results, function(x) x['global_coef_df'])
+all_perf_results[10]$global_performance
+rf_performance_plotter(all_perf_results[10]$global_performance)
+rf_coef_visualization(all_coef_results[10]$global_coef_df)
+for (perf_df in all_perf_results){
+  perf_viz = rf_performance_plotter(perf_df)
+  print(perf_viz$plot)
+}
+
+for (coef_df in all_coef_results){
+  coef_viz = rf_coef_visualization(coef_df)
+  print(coef_viz)
+}
 ```
+
 ```{r PLS}
-mars_control_function = function(df,
+pls_control_function = function(df,
                                  target,
                                  k1,
                                  k2,
@@ -262,27 +277,42 @@ mars_control_function = function(df,
               # "global_coef_plot" = global_coef_plot
               ))
 }
-print('fds')
+pls_test_df = split_dab_df_list[[8]]
+pls_test_df
 ```
 
 ```{r}
-test_df = f_test_df %>% select(-c(Replicates, Conc.))
+pls_test_data = pls_test_df %>% select(-c(Replicates, Conc.))
 trCont = trainControl(method = "repeatedcv",
                       repeats = 3,
                       number = 5)
-
+spls_grid = expand.grid(eta = seq(0.3, 1, 0.2),
+                        K = seq(5,10,1),
+                        kappa = 0.5)
+spls_grid
 pls_t = train(target_vector~.,
-              data = test_df,
+              data = pls_test_data,
               trControl = trCont,
               method = 'pls')
 
 spls_t = train(target_vector~.,
-              data = test_df,
+              data = pls_test_data,
               trControl = trCont,
+              tuneGrid = spls_grid,
               method = 'spls')
+spls_t$bestTune
+spls_t$results
 # Need to get the average and absolute value of these, since it's for each
-varImp(pls_t)
-varImp(spls_t)
+pls_imp = varImp(pls_t)
+spls_imp = varImp(spls_t)
+
+pls_imp_df = pls_imp$importance
+spls_imp_df = spls_imp$importance
+pls_imp_df
+spls_imp_df
+getModelInfo("spls")
+plot(varImp(pls_t))
+plot(varImp(spls_t))
 ```
 
 

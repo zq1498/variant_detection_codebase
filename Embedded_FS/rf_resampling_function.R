@@ -82,7 +82,6 @@ rf_resampling_function = function(target,
     # which can then be passed to bind_rows. Bind_rows is ideal because it matches
     # by column name.
     coef_imp = as.data.frame(t(coef_imp$importance))
-    print(coef_imp)
     if (is.null(perf_df)){
       perf_df = perf_call$perf_metrics
     }
@@ -94,7 +93,6 @@ rf_resampling_function = function(target,
       coef_df = coef_imp
     }
     else{
-      print(coef_df)
       coef_df = coef_df %>% bind_rows(coef_imp)
     }
     conf_table_list[[length(conf_table_list)+1]] = perf_call$conf_matrix

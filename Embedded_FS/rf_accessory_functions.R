@@ -210,6 +210,7 @@ model_call_loop = function(df_list,
   result_list = list()
   if (model_type == "rf_fs"){
     for (df in df_list){
+      print(df)
       result_list[[length(result_list) + 1]] = rf_control_function(df = df, 
                                                                     target = "target_vector", 
                                                                     k1 = 5, 
@@ -222,6 +223,7 @@ model_call_loop = function(df_list,
   }
   else if (model_type == 'mars'){
     for (df in df_list){
+      print(df)
       result_list[[length(result_list) + 1]] = mars_control_function(df = df, 
                                                                    target = "target_vector", 
                                                                    k1 = 5, 

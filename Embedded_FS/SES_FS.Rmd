@@ -19,20 +19,105 @@ library(ggpubr)
 library(MXM)
 ```
 
+```{r}
+# This file is within the Embedded_FS folder in the variant_detection_codebase
+# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
+# order to run in isolation, so I'm just setting the wd to the parent from which
+# I can call both files. The wd will be reset after this chunk anyway
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Embedded_FS/rf_accessory_functions.R")
+source("Embedded_FS/rf_resampling_function.R")
+split_dab_df_list = main_preprocessor()
+```
+
 
 ```{r}
 # Implementing statistically equivalent signature with my data
+# Trimming data
 test_df = split_dab_df_list[[10]] %>% select(-c(Conc., Replicates)) %>% mutate_at("target_vector", as.factor)
 
+# Splitting data
 test_folds = createFolds(test_df$target_vector, k = 5)
 
 mxm_train = test_df[-test_folds[[1]], ]
 mxm_test = test_df[test_folds[[1]], ]
 
-mxm_default_mod = SES(
-  target = "target_vector",
-  dataset = mxm_train,
+x_mxm_train = mxm_train %>% select(-target_vector)
+y_mxm_train = mxm_train[["target_vector"]]
+
+ses_default_mod = SES(
+  target = y_mxm_train,
+  dataset = x_mxm_train,
   max_k = 3,
+  threshold = 0.1,
+  test = 'testIndMultinom',
+  ini = NULL,
+  wei = NULL,
+  user_test = NULL,
+  hash = TRUE, # Setting hash=T allows you to quickly recalculate the SES using a different threshold or max_k
+  hashObject = NULL,
+  ncores = 1
+)
+
+
+# SES readout
+ses_default_mod@selectedVars # The selected variables, i.e., the signature of the target variable. This is similar to the ouput of the signature attr
+# In this training case, it outputs 5, 7, 8, 9, 11, 14
+SelectedVars_names<-colnames(mxm_train[ses_default_mod@selectedVars])
+SelectedVars_names 
+# The actual names of these vars are dab18_cab9, dab18_cab13, dab18_cab14, dab18_cab15, dab18_cab21, dab18_cab25
+# We can then order these vars by increasing p-values with the selectedVarsOrder attr 
+SelectedVars_ordered <- colnames(mxm_train[ses_default_mod@selectedVarsOrder])
+SelectedVars_ordered 
+# In this case, the ordered names are dab18_cab21, dab18_cab13, dab18_cab9, dab18_cab15, dab18_cab14, dab18_cab25
+# We can also plot the log(p-values) associated with the significance tests we performed during the SES algorithm 
+plot(ses_default_mod, mode = 'all')  # This plot is really confusing because it doesn't seem to align with the ordered vars
+
+ses_default_mod@signatures # A matrix reporting all equivalent signatures (one signature for each row)
+ses_default_mod@queues # Queues is a list containing a list (queue) of equivalent features for each variable included in selectedVars. An equivalent signature can be built by selecting one and only one feature from each queue. In the case that there are no equivalent signatures, each list within queues will be a single value
+
+ses_default_mod@n.tests
+
+ses_default_mod@pvalues # Vector reporting the strength of the association of each predictor with the target, in the context of all other variables
+ses_default_mod@stats # Very similar to pvalues, but for each feature included in the data set, pvalues reports the strength of its association with the target in the context of all other variables. Particularly, this vector reports the max p-values found when the association of each variable with the target is tested agaisnt different conditional sets. Lower pvalues indicate higher association whereas higher stats indicates higher association
+ses_default_mod@univ # A list containing the results from the univariate tests
+
+# We can also train a model using the significant variables. One or more classification models are returned
+# ~ ~ ~ glm() Model Estimates Using SES Feature Subset As Predictor Variables ~ ~ ~ 
+mxm_mod_ses_1 = ses.model(target = as.matrix(y_mxm_train),
+                          dataset = as.matrix(x_mxm_train),
+                          wei = NULL,
+                          sesObject = mxm_default_mod,
+                          test = 'testIndMultinom')
+
+mxm_mod_ses_1
+mxm_mod_ses_1$mod
+mxm_mod_ses_1$signature
+
+
+# If the analysis has to be done using permutations (when few observations are available), then this could be applied like this:
+perm_ses_model = perm.ses(target = y_mxm_train,
+                          dataset = x_mxm_train,
+                          R = 999,
+                          max_k = 3,
+                          threshold = 0.1,
+                          test = 'permMultinom',
+                          ini = NULL,
+                          wei = NULL,
+                          user_test = NULL,
+                          hash = TRUE,
+                          hashObject = NULL,
+                          ncores = 1)
+
+
+
+
+
+mmpc_default_mod = MMPC(
+  target = y_mxm_train,
+  dataset = x_mxm_train,
+  max_k = 3, # the maximum size for the conditioning set to use in the conditional independence test
   threshold = 0.1,
   test = 'testIndMultinom',
   ini = NULL,
@@ -42,34 +127,17 @@ mxm_default_mod = SES(
   hashObject = NULL,
   ncores = 1
 )
-
-mxm_default_mod@selectedVars
-SelectedVars_names<-colnames(mxm_train[mxm_default_mod@selectedVars])
+# MMPC readout
+mmpc_default_mod@selectedVars
+SelectedVars_names<-colnames(mxm_train[mmpc_default_mod@selectedVars])
 SelectedVars_names
 
-SelectedVars_ordered <- colnames(mxm_train[mxm_default_mod@selectedVarsOrder])
+SelectedVars_ordered <- colnames(mxm_train[mmpc_default_mod@selectedVarsOrder])
 SelectedVars_ordered
 
-mxm_default_mod@signatures
 
-perm_ses_model = perm.ses(target = "target_vector",
-                          dataset = mxm_train,
-                          R = 999,
-                          max_k = 3,
-                          threshold = 0.05,
-                          test = 'permMultinom',
-                          ini = NULL,
-                          wei = NULL,
-                          user_test = NULL,
-                          hash = FALSE,
-                          hashObject = NULL,
-                          ncores = 1)
 
-# cv.ses
-mxm_mod_ses_1 = ses.model(target = as.matrix(mxm_train$target_vector),
-                          dataset = as.matrix(mxm_train),
-                          wei = NULL,
-                          sesObject = mxm_default_mod,
-                          test = 'testIndMultinom')
+
+
 ```
 
