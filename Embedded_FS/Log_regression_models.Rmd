@@ -169,10 +169,6 @@ all_models = model_call_loop(df_list = split_dab_df_list,
                              n_top_features = c(10, 8, 7, 6, 5, 4, 3)
                              )
 
-split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
-
-all_results = sapply(all_models, function(x) x['global_performance'])
-
 dab_ind = 1
 for (result in all_results){
   dab = split_dab_df_order[dab_ind]
@@ -186,9 +182,9 @@ for (result in all_results){
 ```
 
 ```{r}
-# I literally want to murder this stupid function
+# This function is very poorly written
 # The only way it actually makes sense is to include it in the global resample function
-# otherwise you have no fucking clue what number of pairs you have, what dab you're plotting
+# otherwise you have no clue what number of pairs you have, what dab you're plotting
 # etc. It's such a pain that I'd rather label 100 plots manually than figure it out
 coef_parser = function(list_of_results) {
   all_model_list = sapply(list_of_results, function(x) x['global_opt_models'])

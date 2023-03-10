@@ -237,3 +237,18 @@ model_call_loop = function(df_list,
   return(result_list)
 }
 
+
+# Function should work for both caret based and glmnet based models
+save_metrics = function(dab_df_list, metric, results_list){
+  # Iterates over each df in dab_df_list and greps columns names
+  # \\d{1,2} == match any numeric of length 1 or 2, required so that I don't
+  # pull the target from target_vector since originally I was just reading until
+  # I hit an _
+  dab_order = sapply(split_dab_df_list, function(x) unique(regmatches(colnames(x),
+                                                                      regexpr("dAb\\d{1,2}(?=_)", colnames(x), perl = T))))
+  
+  all_results = sapply(results_list, function(x) x[metric])
+  all_results_names = sapply(dab_order, function(x) paste(x, "_performance_df.csv",sep=''))
+  names(all_results) = all_results_names
+  iwalk(all_results, ~write_csv(.x, file = paste0(.y, ".csv")))
+}
