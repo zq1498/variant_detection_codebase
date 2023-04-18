@@ -74,7 +74,8 @@ ab_pair_heatmap <- ggplot(pair_bool_matrix, aes(dAb, variable)) +               
   labs(title = "Antibody pair heatmap",
        x = "Detection Antibody",
        y = "Capture Antibody")+
-  scale_fill_gradient(low = 'pink', high = 'darkred')
+  scale_fill_gradient(low = 'pink', high = 'darkred')+
+  theme_classic()
 ab_pair_heatmap
 ```
 
@@ -492,5 +493,43 @@ pca_plotter = function(df_list){
 
 ```{r}
 test_df = original_potential_pair_df[[3]]
+
+
+dilution_test_start_400 = runif(400, min = 60, max = 100)
+dilution_test_start_100 = runif(100, min = 60, max = 100)
+
+
+dilution_array_400 = dilution_test_start_400
+
+length(dilution_array_400)
+for (ind in 1:8){
+  next_dilution = dilution_test_start_400/(2*ind)
+  print(length(next_dilution))
+  dilution_array_400 = c(next_dilution, dilution_array_400)
+}
+
+dilution_array_100 = dilution_test_start_100
+for (ind in 1:8){
+  next_dilution = dilution_test_start_100/(2*ind)
+  dilution_array_100 = c(next_dilution, dilution_array_100)
+}
+length(dilution_array_100)
+pad = rep('NA', length(dilution_array_400)-length(dilution_array_100))
+length(pad)
+padded_dilution_100 = c(dilution_array_100, pad)
+padded_dilution_100 = as.numeric(padded_dilution_100)
+
+sampling_df = data.frame("sample_400" = dilution_array_400, "sample_100" = padded_dilution_100)
+pivot_sampling_df = sampling_df %>% pivot_longer(cols = everything(),
+                                                 names_to = "num_samples",
+                                                 values_to = 'concentration')
+pivot_sampling_df_log = pivot_sampling_df %>% bind_cols("log_concentration" = log(pivot_sampling_df$concentration))
+pivot_sampling_df_log
+ggplot(pivot_sampling_df, aes(x=concentration, color = num_samples)) +
+  geom_histogram(aes(y = after_stat(density))) + 
+  geom_density()
+pivot_sampling_df_log %>% count(num_samples)
+ggplot(pivot_sampling_df_log, aes(x=log_concentration, color = num_samples), na.rm = T) +
+  geom_histogram()
 ```
 

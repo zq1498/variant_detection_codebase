@@ -43,9 +43,6 @@ rf_control_function = function(df,
                                n_top_features = c(),
                                model_type
 ){
-  cl = makeCluster(6)
-  registerDoParallel(cl)
-    
   external_perf_df = NULL
   global_perf_df = NULL
   
@@ -143,7 +140,7 @@ rf_perf_plot$plot
 ```
 
 ```{r MODEL LOOP, warning=FALSE}
-all_models = model_call_loop(df_list = split_dab_df_list,
+all_rf_models = model_call_loop(df_list = split_dab_df_list,
                              model_type = 'rf_fs',
                              k1 = 5,
                              k2 = 5,
@@ -154,8 +151,13 @@ all_models = model_call_loop(df_list = split_dab_df_list,
 
 split_dab_df_order = c("dAb4", "dAb5", "dAb6", "dAb7", "dAb8", "dAb11", "dAb13", "dAb16", "dAb17", "dAb18", "dAb19", "dAb20", "dAb25")
 
-all_perf_results = sapply(all_models, function(x) x['global_performance'])
-all_coef_results = sapply(all_models, function(x) x['global_coef_df'])
+rf_coef_filenames = list.files("rf_results/Global Coefs", pattern = "*.csv", full.names = T)
+all_rf_coef_results = lapply(rf_coef_filenames, read.csv)
+all_rf_coef_results
+
+all_rf_perf_results = sapply(all_models, function(x) x['global_performance'])
+all_rf_coef_results = sapply(all_models, function(x) x['global_coef_df'])
+all_perf_results
 all_perf_results[[1]]
 for (perf_df in all_perf_results){
   perf_viz = rf_performance_plotter(perf_df)
@@ -166,6 +168,9 @@ for (coef_df in all_coef_results){
   coef_viz = rf_coef_visualization(coef_df)
   print(coef_viz)
 }
+
+save_metrics(split_dab_df_list, 'global_performance', all_models)
+save_metrics(split_dab_df_list, 'global_coef_df', all_models)
 # dab_ind = 1
 # for (result in all_results){
 #   dab = split_dab_df_order[dab_ind]
@@ -176,5 +181,105 @@ for (coef_df in all_coef_results){
 #          dpi = 600)
 #   dab_ind = dab_ind+1
 # }
+```
+
+```{r}
+rank_pairs = function(coef_results, model){
+  ranked_pairs = NULL
+  for (coef_df in coef_results){
+    coef_df = na.replace(coef_df, 0)
+    
+    piv_df = coef_df %>% 
+      group_by(n_features) %>% 
+      filter(n_features == 10 |
+               n_features == 5) %>% 
+      summarise(across(everything(), mean, na.rm = T)) %>% 
+      pivot_longer(cols = -n_features,
+                   names_to = "cAb",
+                   values_to = "Importance")
+      
+
+    dAb_name = regexpr(".+(?=_)",piv_df$cAb, perl = T)
+    dAb_name = unique(regmatches(piv_df$cAb, dAb_name))
+    piv_df$dAb = dAb_name
+    
+    cab_dab_df = piv_df %>% mutate(across("cAb", ~gsub(".*_", "",.)))
+
+    # Cleaning and ordering data frame, then adding a rank to each cab by dab
+    # and n_features. The ranks are inverted (i.e. the most important has the 
+    # highest rank) and since both 5 and 10 pair subsets are included in the
+    # columns
+    top_pairs = cab_dab_df %>% 
+      group_by(n_features) %>% 
+      slice_head(n=10) %>% 
+      filter(Importance != 0) %>% 
+      relocate(dAb, .after = n_features) %>% 
+      ungroup() %>% 
+      group_by(n_features, dAb) %>% 
+      arrange_at("Importance", desc, .by_group = T) %>% 
+      mutate(rank = rank(Importance))
+    
+    if (is.null(ranked_pairs)){
+      ranked_pairs = top_pairs
+    }
+    else {
+      ranked_pairs = ranked_pairs %>% bind_rows(top_pairs)
+    }
+  }
+  ranked_pairs$Model = model
+  return(ranked_pairs)
+}
+rf_ranked_pairs = rank_pairs(all_rf_coef_results, 'rf')
+pls_ranked_pairs = rank_pairs(all_pls_coef_results, 'pls')
+pls_ranked_pairs
+# ranked_lasso_coefs exists too but is in the log_regression models so if I reload
+# this data it wont be here. I need to alter ranked lasso slightly so it binds
+# better
+# RANKED FEATURES FROM THE TOP 5 FEATURE SUBSETS
+rf_ranked_5 = rf_ranked_pairs %>% ungroup() %>% filter(n_features == 10) %>% select(-n_features)
+pls_ranked_5 = pls_ranked_pairs %>% ungroup() %>% filter(n_features == 10) %>% select(-n_features)
+ranked_lasso_coefs_5 = ranked_lasso_coefs %>% group_by(dAb) %>% slice_head(n=5)
+ranked_lasso_coefs_5
+small_subset_ranked_coefs = bind_rows(rf_ranked_5, pls_ranked_5, ranked_lasso_coefs_5)
+
+small_subset_summed_ranks = small_subset_ranked_coefs %>% 
+  group_by(dAb, cAb) %>% 
+  summarise(across(rank, sum)) %>% 
+  arrange_at("rank",desc, .by_group = T) %>% 
+  ungroup() %>% 
+  mutate(across(1:2, as.factor))
+
+small_subset_summed_rank_coefs_trim = small_subset_summed_ranks %>% 
+  filter(!(dAb %in% bad_dabs))
+
+# RANKED FEATURES FROM THE TOP TEN FEATURE SUBSETS
+rf_ranked_10 = rf_ranked_pairs %>% ungroup() %>% filter(n_features == 10) %>% select(-n_features)
+pls_ranked_10 = pls_ranked_pairs %>% ungroup() %>% filter(n_features == 10) %>% select(-n_features)
+ranked_lasso_coefs
+
+all_ranked_coefs = bind_rows(rf_ranked_10, pls_ranked_10, ranked_lasso_coefs)
+all_ranked_coefs
+
+# Sum the ranks then arrange by decreasing rank total
+summed_rank_coefs = all_ranked_coefs %>% 
+  group_by(dAb, cAb) %>% 
+  summarise(across(rank, sum)) %>% 
+  arrange_at("rank",desc, .by_group = T) %>% 
+  ungroup() %>% 
+  mutate(across(1:2, as.factor))
+
+# Create an identical data frame but remove the poor performing dabs
+bad_dabs = c('dAb4', 'dAb7', 'dAb8', 'dAb11', 'dAb16')
+summed_rank_coefs_trim = summed_rank_coefs %>% 
+  filter(!(dAb %in% bad_dabs))
+
+ggplot(summed_rank_coefs_trim, aes(x=reorder(cAb, -rank), y=rank))+
+  geom_bar(stat='identity')+
+  facet_wrap(~dAb, scales = 'free')
+
+
+ggplot(small_subset_summed_rank_coefs_trim, aes(x=reorder(cAb, -rank), y=rank))+
+  geom_bar(stat='identity')+
+  facet_wrap(~dAb, scales = 'free')
 ```
 

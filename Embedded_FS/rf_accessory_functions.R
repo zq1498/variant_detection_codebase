@@ -7,6 +7,7 @@ library(gridExtra)
 library(doParallel)
 library(roxygen2)
 library(RColorBrewer)
+library(gtools)
 
 
 # GLM PERFROMANCE FUNCTION
@@ -92,17 +93,20 @@ get_rf_performance = function(predictions, y_test){
 
 
 rf_coef_visualization = function(coef_df){
-  # Calculate the stderrs and averages, bind them to the original data set, then select them
-  # (I only bind to the data set so that it remains in the same data structure). Pivot them
-  # longer, then wider again so that I have a pairs, average, and se.
+  # Calculate the stderrs and averages, bind them to the original data set, then
+  # select them (I only bind to the data set so that it remains in the same data
+  # structure). Pivot them longer, then wider again so that I have a pairs,
+  # average, and se.
+  coef_df = na.replace(coef_df, 0)
   std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
   summarized_coef_df = coef_df %>% 
     group_by(n_features) %>% 
     summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
   
-  # From the summarized dataframe, select the means and add the number of features.
-  # Pivot the data frame to have pairs as a column, add a measure value, then pivot back.
-  # Remove the _mean from the end of each pair so that the pairs can be easily joined later.
+  # From the summarized dataframe, select the means and add the number of
+  # features. Pivot the data frame to have pairs as a column, add a measure
+  # value, then pivot back. Remove the _mean from the end of each pair so that
+  # the pairs can be easily joined later.
   coef_df_means = summarized_coef_df %>% 
     select(ends_with("_mean")) %>% 
     bind_cols("n_features" = as.factor(summarized_coef_df$n_features)) %>% 
@@ -134,19 +138,82 @@ rf_coef_visualization = function(coef_df){
   modded_df$Pairs = strip_cAbs
   
   coef_plot = ggplot(modded_df, aes(x=reorder(Pairs, -Average), y=Average))+
-    geom_bar(stat='identity', fill = "#0577B1")+
+    geom_bar(stat='identity', fill = "#005587")+
     geom_errorbar(aes(ymin=Average-se, ymax=Average+se), width=0.2)+
-    labs(x="Pair", y="Average Importance", 
-         title = paste("Average feature importance:", dab_name))+
-    facet_wrap(~fct_rev(n_features), scales = "free_x")+
+    labs(x="Pair", y="Average Feature Importance", 
+         title = paste("Average Feature Importance:", dab_name))+
+    facet_wrap(~fct_rev(n_features), nrow = 2, ncol = 4, scales = "free_x")+
     theme_classic()+
-    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1))
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 6),
+          panel.border = element_rect(color = "#B5B5B5", fill = NA, size = 1),
+          panel.background = element_rect(fill = NULL, color = "#B5B5B5"))
 
-  
   return(coef_plot)
 }
 
+pls_coef_visualization = function(coef_df){
+  # Calculate the stderrs and averages, bind them to the original data set, then
+  # select them (I only bind to the data set so that it remains in the same data
+  # structure). Pivot them longer, then wider again so that I have a pairs,
+  # average, and se.
 
+  # Adjusting the standard error to get at least take the absolute value first
+  std.err = function(x, na.rm = T) sd(x, na.rm)/sqrt(length(x))
+  
+  # I'm not positive that the way I get my standard deviation is super right but
+  # if anything I think it overestimates them
+  coef_df = na.replace(coef_df, 0)
+  summarized_coef_df = coef_df %>% 
+    group_by(n_features) %>% 
+    summarise(across(everything(), .f = list(magnitude = mean, se = std.err), na.rm = T))
+
+  # From the summarized data frame, select the means and add the number of
+  # features. Pivot the data frame to have pairs as a column, add a measure
+  # value, then pivot back. Remove the _mean from the end of each pair so that
+  # the pairs can be easily joined later.
+  coef_df_means = summarized_coef_df %>% 
+    select(ends_with("_magnitude")) %>% 
+    bind_cols("n_features" = as.factor(summarized_coef_df$n_features)) %>% 
+    pivot_longer(cols = -n_features,
+                 names_to = "Pairs",
+                 values_to = "Magnitude") %>% 
+    bind_cols("Measure" = 'Magnitude') %>% 
+    pivot_wider(names_from = Measure,
+                values_from = "Magnitude") %>% 
+    mutate(across("Pairs", ~ gsub("_magnitude", "", .)))
+
+  coef_df_se = summarized_coef_df %>% select(ends_with("_se")) %>% 
+    bind_cols("n_features" = as.factor(summarized_coef_df$n_features)) %>% 
+    pivot_longer(cols = -n_features,
+                 names_to = "Pairs",
+                 values_to = "Standard_errors") %>% 
+    bind_cols("Measure" = 'se') %>% 
+    pivot_wider(names_from = Measure,
+                values_from = "Standard_errors") %>% 
+    mutate(across("Pairs", ~ gsub("_se", "", .))) 
+  
+  modded_df = inner_join(coef_df_se, coef_df_means, by = c("Pairs", "n_features"))
+  
+  # Grabbing dAb names from modded_df and stripping them for nice plotting
+  dab_name = regexpr(".+(?=_)",modded_df$Pairs, perl = T)
+  dab_name = unique(regmatches(modded_df$Pairs, dab_name))
+  
+  strip_cAbs = gsub("^[^c]*","",modded_df$Pairs, perl = T) #!(c.*)
+  modded_df$Pairs = strip_cAbs
+  coef_plot = ggplot(modded_df, aes(x=reorder(Pairs, -Magnitude), y=Magnitude))+
+    geom_bar(stat='identity', fill = "#005587")+
+    geom_errorbar(aes(ymin=Magnitude-se, ymax=Magnitude+se), width=0.2)+
+    labs(x="Pair", y="Average Magnitude of Importance", 
+         title = paste("Average feature importance:", dab_name))+
+    facet_wrap(~fct_rev(n_features), nrow = 2, ncol = 4, scales = "free_x")+
+    theme_classic()+
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 6),
+          panel.border = element_rect(color = "#B5B5B5", fill = NA, size = 1),
+          panel.background = element_rect(fill = NULL, color = "#B5B5B5"))
+  
+  
+  return(coef_plot)
+}
 
 rf_performance_plotter = function(perf_df){
   
@@ -192,7 +259,9 @@ rf_performance_plotter = function(perf_df){
          y = "Mean Performance Metric Value",
          color = "Performance Metric")+
     theme_classic()+
-    scale_color_manual(values = c(blue_palette[[1]], blue_palette[[3]], blue_palette[[4]]))
+    scale_color_manual(values = c(blue_palette[[1]], blue_palette[[3]], blue_palette[[4]]))+
+    theme(axis.text = element_text(size = 12),
+          plot.title = element_text(size = 14, face = 'bold'))
   
   return(list("avg_df" = fs_avg_long,
               "plot" = viz))
@@ -207,6 +276,9 @@ model_call_loop = function(df_list,
                            threshold = 0,
                            n_top_features = c()
 ){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
   result_list = list()
   if (model_type == "rf_fs"){
     for (df in df_list){
@@ -234,6 +306,19 @@ model_call_loop = function(df_list,
                                                                    )
     }
   }
+  else if (model_type == 'pls'){
+    for (df in df_list){
+      print(df)
+      result_list[[length(result_list) + 1]] = pls_control_function(df = df, 
+                                                                     target = "target_vector", 
+                                                                     k1 = 5, 
+                                                                     k2 = 5, 
+                                                                     num_repeats = 3, 
+                                                                     threshold = 0,
+                                                                     n_top_features = c(10, 8, 7, 6, 5, 4, 3)
+      )
+    }
+  }
   return(result_list)
 }
 
@@ -244,11 +329,11 @@ save_metrics = function(dab_df_list, metric, results_list){
   # \\d{1,2} == match any numeric of length 1 or 2, required so that I don't
   # pull the target from target_vector since originally I was just reading until
   # I hit an _
-  dab_order = sapply(split_dab_df_list, function(x) unique(regmatches(colnames(x),
+  dab_order = sapply(dab_df_list, function(x) unique(regmatches(colnames(x),
                                                                       regexpr("dAb\\d{1,2}(?=_)", colnames(x), perl = T))))
   
   all_results = sapply(results_list, function(x) x[metric])
-  all_results_names = sapply(dab_order, function(x) paste(x, "_performance_df.csv",sep=''))
+  all_results_names = sapply(dab_order, function(x) paste(x, "_", metric, "_df.csv", sep = ''))
   names(all_results) = all_results_names
   iwalk(all_results, ~write_csv(.x, file = paste0(.y, ".csv")))
 }

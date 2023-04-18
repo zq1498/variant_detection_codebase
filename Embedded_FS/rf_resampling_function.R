@@ -68,11 +68,23 @@ rf_resampling_function = function(target,
     else if (model_type == 'pls'){
       trained_model = train(model_formula,
                             data = train,
-                            method = "plsda",
+                            method = "pls",
+                            trControl = train_contrl)
+      
+      opt_predict = predict(trained_model, ncomp = trained_model$bestTune$ncomp,
+                            newdata = x_test,
+                            type = "raw")
+      opt_predict = opt_predict %>% as.factor()
+    }
+    
+    else if (model_type == 'spls'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = "spls",
                             trControl = train_contrl)
       
       opt_predict = predict(trained_model, x_test,
-                            type = "class")
+                            type = "raw")
     }
     perf_call = get_rf_performance(opt_predict, y_test)
     
@@ -153,7 +165,32 @@ multi_feature_global_rf_resampling = function(target,
                             method = 'earth',
                             trControl = train_contrl)
       
-      opt_predict = predict(trained_model, x_test, type = 'raw')
+      opt_predict = predict(trained_model$finalModel, x_test, type = 'raw')
+      opt_predict = opt_predict$predictions %>% as.factor()
+    }
+    
+    else if (model_type == 'pls'){
+      trained_model = train(model_formula,
+                            data = downselect_train,
+                            method = "pls",
+                            tuneGrid = expand.grid(ncomp = c(1:n_features)),
+                            trControl = train_contrl)
+     
+      opt_predict = predict(trained_model, ncomp = trained_model$bestTune$ncomp,
+                            newdata = x_test,
+                            type = "raw")
+    }
+    
+    else if (model_type == 'spls'){
+      # Probably not really working
+      trained_model = train(model_formula,
+                            data = downselect_train,
+                            method = "spls",
+                            trControl = train_contrl)
+      
+      opt_predict = predict(trained_model$finalModel, x_test,
+                            type = "raw")
+      opt_predict = opt_predict$predictions %>% as.factor()
     }
     
     perf_call = get_rf_performance(opt_predict, y_test)

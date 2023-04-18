@@ -76,26 +76,60 @@ get_cv_coefs = function(model_list,
 #' 
 #' @return: a list of plots that visualize the beta coefficients
 coef_plot = function(coef_df) {
+  coef_color_palette = c(
+    `purple` = "#12782b", #
+    `dark_purple` = "#5e1278",
+    `blue` = "#206a96",
+    `dark_blue` = "#09083C"
+  )
+  
+  # Obtain detection antibody name so it can be added to the plot title.
+  # Remove the dab name from the pair label to make the plot more legible
+  dab_name = regexpr(".+(?=_)", coef_df$Pair, perl = T)
+  dab_name = unique(regmatches(coef_df$Pair, dab_name))
+  
+  stripped_cabs = gsub("^[^c]*", "", coef_df$Pair, perl = T)
+  coef_df$Pair = stripped_cabs
   
   coef_df = coef_df %>% mutate_if(is.numeric, abs)
   coef_plot = coef_df %>% pivot_longer(col = -Pair,
-                                       names_to = 'variant') %>%
+                                       names_to = 'Variant') %>%
     ggplot(aes(
-      x = reorder(Pair,-value),
+      x = reorder(Pair, -value),
       y = value,
-      fill = variant
+      fill = Variant
     )) +
-    geom_bar(position = 'dodge', stat = 'identity') +
-    labs(# title = 'Average (absolute value) lasso coefficients by variant',
-         x = "Pairs",
-         y = 'Coefficient') +
-    theme_classic() + 
-    theme(axis.text.x = element_text(
-      angle = 45,
-      vjust = 1,
-      hjust = 1
-    )) +
-    scale_fill_brewer(palette = 'Dark2')
+    geom_bar(position = 'dodge',
+             stat = 'identity',
+             color = 'black') +
+    labs(
+      title = paste(
+        'Average (absolute value) lasso coefficients by variant:',
+        dab_name,
+        sep = " "
+      ),
+      x = "Pairs",
+      y = 'Coefficient'
+    ) +
+    theme_classic() +
+    theme(
+      axis.text.x = element_text(
+        angle = 45,
+        vjust = 1,
+        hjust = 1
+      ),
+      axis.text = element_text(face = 'bold',
+                               size = 12),
+      axis.title = element_text(face = "bold",
+                                size = 12)
+    ) +
+    scale_color_manual(
+      values = c(coef_color_palette[[1]],
+                 coef_color_palette[[2]],
+                 coef_color_palette[[3]],
+                 coef_color_palette[[4]]),
+      aesthetics = 'fill'
+    )
   return(coef_plot)
 }
 
@@ -300,7 +334,7 @@ multi_fs_parser = function(mixed_performance_df, dab){
   fs_data = mixed_performance_df %>% filter(!global_iterations %in% c("Average","Stdev"))
   
   fs_data_avg = fs_data %>%
-    select(accuracy, kappa, Average_f1, num_features) %>% 
+    select(accuracy, kappa, Average_f1, num_features) %>%
     group_by(num_features) %>%
     summarise(across(everything(), .f = list(mean = mean, se = std.err), na.rm = T))
   
@@ -317,22 +351,30 @@ multi_fs_parser = function(mixed_performance_df, dab){
   # pivot_longer would be better but I can't be bothered right now
   fs_avg_long = fs_data_avg %>%
     gather(mean_type, mean_val, "Mean Accuracy", "Mean Kappa", "Mean Average F1") %>%
-    gather(se_type, se_val, accuracy_se, kappa_se, Average_f1_se) %>% 
+    gather(se_type, se_val, accuracy_se, kappa_se, Average_f1_se) %>%
     distinct(mean_val, .keep_all = T)
   
-
-  viz = ggplot(fs_avg_long, aes(num_features, y = mean_val, colour=mean_type)) + 
-    geom_line() + 
-    geom_point() + 
+  blue_palette = c(
+    `lighter_blue` = "#06a8f9",
+    `light_blue` = "#0577B1",
+    `blue` = "#005587",
+    `medium_blue` = "#750087",
+    `dark_blue` = "#012169"
+  )
+  
+  viz = ggplot(fs_avg_long, aes(num_features, y = mean_val, colour=mean_type)) +
+    geom_line() +
+    geom_point() +
     geom_errorbar(aes(ymin=mean_val-se_val, ymax=mean_val+se_val), width = 0.2)+
     scale_x_reverse(breaks = seq(max(fs_data$num_features), min(fs_data$num_features),  by = -1))+
     ylim(0.2, 1.0) +
-    labs(title = paste('Average Performance by number of pairs used in the model - ', dab),
+    labs(title = paste('Average Performance by number of pairs used in the model - dAb', dab, sep=""),
          x = "Number of antibody pairs in model",
          y = "Mean performance metric value",
          color = "Performance Metric") +
     theme_classic()+
-    scale_color_brewer(palette = 'Dark2')
+    theme(axis.text = element_text(face='bold', size = 12))+
+    scale_color_manual(values = c(blue_palette[[1]], blue_palette[[3]], blue_palette[[4]]))
   
   return(list("avg_df" = fs_avg_long,
               "plot" = viz))
@@ -347,6 +389,9 @@ model_call_loop = function(df_list,
                            threshold = 0,
                            n_top_features = c()
                            ){
+  cl = makeCluster(6)
+  registerDoParallel(cl)
+  
   result_list = list()
   if (model_type == "lasso_fs"){
     for (df in df_list){
@@ -359,6 +404,9 @@ model_call_loop = function(df_list,
                                                                   n_top_features = c(10, 8, 7, 6, 5, 4, 3))
     }
   }
+  
+  stopCluster(cl)
+  registerDoSEQ()
   return(result_list)
 }
 

@@ -231,7 +231,7 @@ pls_control_function = function(df,
         coef_df = external_coef_df,
         conf_table_list = external_conf_table_list,
         transformation = c("scale", "center"),
-        model_type = "mars"
+        model_type = "pls"
       )
       
       external_perf_df = external_resample$perf_df
@@ -248,7 +248,7 @@ pls_control_function = function(df,
       num_feature_array[1] = max_features
       num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
       
-      # Global resample 
+      # Global resample
       global_resample = multi_feature_global_rf_resampling(
         target = target,
         train = global_train,
@@ -259,9 +259,9 @@ pls_control_function = function(df,
         coef_df = global_coef_df,
         conf_table_list = global_conf_table_list,
         transformation = c("scale", "center"),
-        model_type = 'mars'
+        model_type = 'pls'
       )
-      
+
       # Set global data frames to the output of the global resample
       global_conf_table_list = global_resample$conf_table_list
       global_coef_df = global_resample$coef_df
@@ -274,29 +274,65 @@ pls_control_function = function(df,
               "global_conf_tables" = global_conf_table_list,
               "global_coef_df" = global_coef_df,
               "global_performance" = global_perf_df
-              # "global_coef_plot" = global_coef_plot
               ))
 }
 pls_test_df = split_dab_df_list[[8]]
-pls_test_df
+pls_test = pls_control_function(df = pls_test_df,
+                                target = 'target_vector',
+                                k1 = 5,
+                                k2 = 5,
+                                num_repeats = 3,
+                                threshold = 0,
+                                n_top_features = c(10, 8, 6, 5, 4))
+pls_test$global_performance
+
+
+pls_coef_visualization(pls_test$global_coef_df)
+
+rf_performance_plotter(pls_test$global_performance)
+```
+```{r warning=FALSE}
+all_pls_results = model_call_loop(df_list = split_dab_df_list,
+                                   model_type = 'pls')
+all_pls_results[[1]]
+
+save_metrics(split_dab_df_list, 'global_performance', all_pls_results)
+save_metrics(split_dab_df_list, 'global_coef_df', all_pls_results)
+
+all_pls_perf_results = sapply(all_pls_results, function(x) x['global_performance'])
+
+for (perf_df in all_perf_results){
+  perf_viz = rf_performance_plotter(perf_df)
+  print(perf_viz$plot)
+}
+
+for (coef_df in all_coef_results){
+  coef_viz = pls_coef_visualization(coef_df)
+  print(coef_viz)
+}
 ```
 
 ```{r}
 pls_test_data = pls_test_df %>% select(-c(Replicates, Conc.))
+split_ind = createDataPartition(pls_test_data$target_vector, p = 0.8, list = F)
+pls_train = pls_test_data[split_ind,]
+pls_test = pls_test_data[-split_ind,]
+
 trCont = trainControl(method = "repeatedcv",
                       repeats = 3,
                       number = 5)
-spls_grid = expand.grid(eta = seq(0.3, 1, 0.2),
-                        K = seq(5,10,1),
+spls_grid = expand.grid(eta = seq(0.3, 1, 0.2), # eta is i think the regularization param
+                        K = seq(5,10,1), # K is the number of components
                         kappa = 0.5)
 spls_grid
 pls_t = train(target_vector~.,
-              data = pls_test_data,
+              data = pls_train,
               trControl = trCont,
+              tuneGrid = expand.grid(ncomp = c(1:10)),
               method = 'pls')
 
 spls_t = train(target_vector~.,
-              data = pls_test_data,
+              data = pls_train,
               trControl = trCont,
               tuneGrid = spls_grid,
               method = 'spls')
@@ -313,6 +349,16 @@ spls_imp_df
 getModelInfo("spls")
 plot(varImp(pls_t))
 plot(varImp(spls_t))
+pls_t$results
+spls_t$results
+pls
+pls_t$bestTune$ncomp
+pls_test
+pls_preds = predict(pls_t, comps = 10, pls_test[2:16], type = 'raw')
+pls_preds
+
+pls_preds = predict(pls_t, comps = 3, pls_test[2:16], type = 'raw')
+pls_preds
 ```
 
 

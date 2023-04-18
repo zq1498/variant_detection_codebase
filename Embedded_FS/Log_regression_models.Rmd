@@ -42,8 +42,6 @@ glm_control_multi_fs = function(df,
                        threshold,
                        n_top_features = c()
                        ) {
-  cl = makeCluster(6)
-  registerDoParallel(cl)
   
   external_perf_df = NULL
   global_perf_df = NULL
@@ -141,8 +139,6 @@ glm_control_multi_fs = function(df,
   )
   global_perf_df = cbind(global_perf_df, global_iterations)
   
-  stopCluster(cl)
-  registerDoSEQ()
   
   if(length(num_feature_array) < length(n_top_features)){
     cat("WARNING: \n The max number of features was below some of the feature numbers your specified")
@@ -168,18 +164,50 @@ all_models = model_call_loop(df_list = split_dab_df_list,
                              threshold = 0,
                              n_top_features = c(10, 8, 7, 6, 5, 4, 3)
                              )
+all_lasso_perf_results = sapply(all_models, function(x) x['global_performance'])
+all_lasso_perf_results
+get_lasso_coefs = function(x){
+  coef_and_plot = get_cv_coefs(get_lasso_coefs)
+  return(coef_and_plot$coef_df)
+}
+
+
+save_metrics(split_dab_df_list, 'global_performance', all_models)
+save_metrics(split_dab_df_list, 'global_coef_df', all_models)
 
 dab_ind = 1
-for (result in all_results){
-  dab = split_dab_df_order[dab_ind]
+for (result in all_lasso_perf_results){
+  # dab = split_dab_df_order[dab_ind]
   res_viz = multi_fs_parser(result, dab)
   print(res_viz$plot)
-  ggsave(filename = paste("Performance over num_features (BoxCox): ", dab, ".png"),
-         plot = res_viz$plot,
-         dpi = 600)
+  # ggsave(filename = paste("Performance over num_features (BoxCox): ", dab, ".png"),
+  #        plot = res_viz$plot,
+  #        dpi = 600)
   dab_ind = dab_ind+1
 }
 ```
+```{r}
+all_lasso_models = sapply(all_models, function(x) x['global_opt_models'])
+
+rank_lasso_coefs = function(list_of_results){
+  ranked_pairs = NULL
+  
+  get_lasso_coefs = function(x){
+    coef_and_plot = get_cv_coefs(x)
+    return(coef_and_plot$coef_df)
+  }
+  
+  opt_models = sapply(list_of_results, function(x) x['global_opt_models'])
+  coef_dfs = sapply(opt_models, get_lasso_coefs)
+  return(coef_dfs)
+}
+
+lt = get_cv_coefs(all_lasso_models[[8]], plot = T)
+lt$coef_df
+lasso_coef_test = rank_lasso_coefs(all_models)
+lasso_coef_test
+```
+
 
 ```{r}
 # This function is very poorly written
@@ -205,8 +233,8 @@ coef_parser = function(list_of_results) {
     plot_list = list()
     for (sublist in sorted_model_list) {
       coef_p = get_cv_coefs(sublist, plot = T)
-      ggsave(filename = paste("lasso_fs_pair_subsets_", save_index, ".png"), plot = coef_p$coef_plot,
-            dpi = 600)
+      # ggsave(filename = paste("lasso_fs_pair_subsets_", save_index, ".png"), plot = coef_p$coef_plot,
+      #      dpi = 600)
       print(coef_p$coef_plot)
       save_index = save_index + 1
     }
@@ -214,5 +242,65 @@ coef_parser = function(list_of_results) {
 }
 
 coef_parser(all_models)
+```
+```{r}
+coef_ranker = function(list_of_results) {
+  ranked_coefs = NULL
+  
+  all_model_list = sapply(list_of_results, function(x) x['global_opt_models'])
+  save_index = 0
+  for (single_dab_models in all_model_list) {
+    sorted_model_list = list()
+    # This is true whenever we have 5 global folds and 3 total repeats
+    num_features_list = length(single_dab_models) / 15
+    for (ind in 1:num_features_list) {
+      ind_max = length(single_dab_models) - (num_features_list - ind)
+      seq_ind = seq(from = ind,
+                    to = ind_max,
+                    by = num_features_list)
+      temp_model_list = single_dab_models[seq_ind]
+      sorted_model_list[[ind]] = temp_model_list
+    }
+    sublist_ind = 1
+    plot_list = list()
+    # Initialize
+    for (sublist in sorted_model_list) {
+      # Sublist is a list of models from the same dAb
+      coef_p = get_cv_coefs(sublist, plot = F)
+      top_pairs = coef_p$coef_df
+      
+      if (is.null(ranked_coefs)){
+        ranked_coefs = top_pairs
+      }
+      else{
+        ranked_coefs = ranked_coefs %>% bind_rows(top_pairs)
+      }
+    }
+  }
+  piv_df = ranked_coefs %>%
+    group_by(Pair) %>%
+    mutate(across(everything(), abs)) %>%
+    summarise(across(everything(), mean, na.rm = T))
+  
+  piv_df$Magnitute = rowMeans(piv_df[,2:5])
+  dab_vector = gsub("_.*", "", piv_df$Pair)
+  cab_vector = gsub(".*_", "", piv_df$Pair)
+  
+  clean_coef_df = data.frame("dAb" = dab_vector,
+                               "cAb" = cab_vector,
+                               "Importance" = piv_df$Magnitute)
+  
+  top_n_pairs = clean_coef_df %>%
+    group_by(dAb) %>%
+    slice_head(n = 10) %>%
+    arrange_at("Importance", desc, .by_group = T) %>%
+    mutate(rank = rank(Importance)) %>% 
+    mutate(Model = 'lasso')
+  
+  return(top_n_pairs)
+}
+
+ranked_lasso_coefs = coef_ranker(all_models)
+ranked_lasso_coefs
 ```
 
