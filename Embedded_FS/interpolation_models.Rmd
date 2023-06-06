@@ -1,0 +1,353 @@
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+library(RColorBrewer)
+library(ranger)
+library(MLmetrics)
+```
+
+```{r}
+# Load in specialized data
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Embedded_FS/rf_accessory_functions.R")
+source("Embedded_FS/rf_resampling_function.R")
+split_dab_df_list = main_preprocessor()
+```
+
+```{r}
+# Load in subset data
+ranked_subsets = read.csv("pair_subset_results/trimmed_summed_ranked_coefs.csv")
+dab_18_df = split_dab_df_list[[10]]
+dab_19_df = split_dab_df_list[[11]]
+
+dab_18_pairs = ranked_subsets %>% filter(dAb == "dAb18")
+dab18_top10 = dab_18_pairs[1:10,]
+dab18_top_cabs = paste0(dab18_top10$cAb,
+                        collapse = '|')
+dab18_best_pairs = dab_18_df %>% select(matches(dab18_top_cabs))
+dab18_best_pairs
+dab18_interpol_df = bind_cols(dab_18_df[,1:3], dab18_best_pairs)
+dab18_interpol_df
+
+dab_19_pairs = ranked_subsets %>% filter(dAb == "dAb19")
+dab19_top10 = dab_19_pairs[1:10,]
+dab19_top_cabs = paste0(dab19_top10$cAb,
+                        collapse = '|')
+dab19_best_pairs = dab_19_df %>% select(matches(dab19_top_cabs))
+dab19_interpol_df = bind_cols(dab_19_df[,1:3], dab19_best_pairs)
+```
+```{r}
+# Starting work with dab18
+dab18_split = groupKFold(group=dab18_interpol_df$Replicates, k=3)
+for (fold in 1:3){
+  print(dab18_interpol_df[dab18_split[[fold]],])
+  print(dab18_interpol_df[-dab18_split[[fold]],])
+  
+}
+dab18_train = dab18_interpol_df[dab18_split[[1]],]
+dab18_test = dab18_interpol_df[-dab18_split[[1]],]
+
+# Loop over columns and interpolate each one, then bind them all together
+dab18_train_split = split(dab18_train, f=dab18_train$Replicates)
+dab18_train_split_test = dab18_train_split[[1]]
+inter_col = dab18_train_split_test$dAb18_cAb25
+original_conc_vals = dab18_train_split_test$Conc.
+
+num_points = 100
+min_concentration = min(dab18_train_split_test$Conc.)
+max_concentation = max(dab18_train_split_test$Conc.)
+log_new_conc = seq(log10(min_concentration), log10(max_concentation),
+                   length.out = num_points)
+
+inter_conc_vals = 10^log_new_conc
+
+spline_mod = smooth.spline(x=original_conc_vals, y=inter_col)
+spline_preds = predict(object = spline_mod, x = inter_conc_vals)
+fitted_inter_vals = spline_preds$y
+length(fitted_inter_vals)
+inter_df = data.frame(conc=inter_conc_vals, vals=fitted_inter_vals)
+
+ggplot(dab18_train_split_test, aes(x=Conc., y=dAb18_cAb25))+
+  geom_point()+
+  geom_smooth()+
+  scale_x_log10()
+
+ggplot(inter_df, aes(x=conc, y=vals))+
+  geom_point()+
+  geom_smooth()+
+  scale_x_log10()
+
+plot(y=fitted_inter_vals, x=inter_conc_vals)
+plot(y=inter_col, x=dab18_train_split_test$Conc.)
+
+dab18_train_split
+```
+
+```{r warning=FALSE}
+# Interpolation as an actual functions
+interpolate_split_data = function(data,
+                                  split_column = 'Replicates',
+                                  num_points = 100,
+                                  new_col_prefix = 'interpol_') {
+  temp_inter_df = NULL
+  interpolated_df_list = list()
+  # Split data by replicates
+  split_dfs = data %>% split(.[[split_column]])
+  
+  # All split dfs have the same concentration values, so I can choose any of them
+  original_conc_vec = split_dfs[[1]]$Conc.
+  
+  min_concentration = min(data$Conc.)
+  max_concentation = max(data$Conc.)
+
+  log_new_concs = seq(log10(min_concentration),
+                      log10(max_concentation),
+                      length.out = num_points)
+  
+  inter_conc_vals = 10 ^ log_new_concs
+  
+  # Interpolate and fit a smoothing spline within each split data frame
+  interpolated_dfs = lapply(split_dfs, function(df) {
+    fluorescence_cols = df %>% select(starts_with('dAb'))
+    for (col in fluorescence_cols) {
+      spline_mod = smooth.spline(x = original_conc_vec, y = col, df = 3, spar=0.8) # Only consistently works when cv = T
+      spline_preds = predict(object = spline_mod, x = inter_conc_vals)
+      fitted_inter_vals = spline_preds$y
+      new_col_name = paste0(new_col_prefix, col)
+      
+      if (is.null(temp_inter_df)) {
+        temp_inter_df = data.frame(
+          "conc" = inter_conc_vals,
+          new_col_name = fitted_inter_vals
+        )
+      }
+      else{
+        temp_inter_df = cbind(temp_inter_df, new_col_name = fitted_inter_vals)
+      }
+    }
+    df_names = colnames(df %>% select(starts_with('dAb')))
+    colnames(temp_inter_df) = c('conc', df_names)
+    return(temp_inter_df)
+  })
+  
+  interpolated_dfs = lapply(names(interpolated_dfs), function(name) {
+    df = interpolated_dfs[[name]]
+    df = df %>% mutate(Replicate = name, .before = conc)
+    return(df)
+  })
+  
+  interpolated_df = do.call(rbind, interpolated_dfs)
+  target_vector = gsub(".*_", "", interpolated_df$Replicate)
+  print(interpolated_df)
+  print(length(target_vector))
+  interpolated_df = interpolated_df %>% mutate("target_vector" = target_vector,
+                                               .before = conc)
+  return(interpolated_df)
+}
+
+dab18_interpolated = interpolate_split_data(data=dab18_train,
+                                            num_points = 25)
+# dab19_interpolated = interpolate_split_data(data=dab19_train)
+dab18_interpolated
+
+for (fold in 1:3){
+  print(paste('fold: ',fold))
+  temp_train = dab18_interpol_df[dab18_split[[fold]],]
+  print(temp_train)
+  print(dim(temp_train))
+
+  print(interpolate_split_data(temp_train))
+}
+
+ggplot(dab18_interpolated, aes(x=conc, y=dAb18_cAb25, color=Replicate))+
+  geom_point()+
+  geom_line()+
+  scale_x_log10()
+
+ggplot(dab18_train, aes(x=Conc., y=dAb18_cAb25, color = Replicates))+
+  geom_point()+
+  geom_line()+
+  scale_x_log10()
+
+```
+
+```{r}
+# Training random forest models
+rf_interpolated_modl = function(df,
+                                target,
+                                k1,
+                                num_repeats.
+                                n_points){
+  performance_df = NULL
+  acc_list = list()
+  train_results_list = list()
+  
+  for (rep in 1:num_repeats){
+      kfold_ind = groupKFold(group=df$Replicates, k=k1)
+      
+      for (fold in 1:k1){
+        train = df[kfold_ind[[fold]],]
+        test = df[-kfold_ind[[fold]],]
+
+        model_formula = paste(target, '~', '.') %>% as.formula()
+        
+        train_control = trainControl(method='repeatedcv',
+                                     number=5,
+                                     repeats=3)
+        
+        # I could also include a weight matrix that places a heavier weight onto the original concentration points
+        train = interpolate_split_data(train,
+                                       num_points = n_points)
+        
+        # Select only fluorescence and target vector columns (drops conc and replicate cols)
+        train = train %>% select(starts_with(c('dAb','target')))
+        test = test %>% select(starts_with(c('dAb','target')))
+        
+        # Preprocess data
+        preproc = preProcess(train, method=c('center','scale'))
+        
+        train = predict(preproc, train)
+        test = predict(preproc, test)
+        
+        # x_train = train %>% select(-target)
+        # y_train = train[[target]]
+        # print(x_train)
+        # 
+        # x_test = test %>% select(-target)
+        y_test = test[[target]]
+        tune_grid = expand.grid(.mtry=c(2:5),
+                                .splitrule='gini',
+                                .min.node.size=c(1,2,3,4))
+        
+        trained_model = train(model_formula,
+                              data=train,
+                              method='ranger',
+                              importance='impurity',
+                              trControl=train_control,
+                              metric='Kappa',
+                              tuneGrid=tune_grid)
+        train_results = trained_model$results
+        train_results_list = c(train_results_list, train_results)
+        
+        opt_predict = predict(trained_model, test,
+                              type='raw')
+        
+        opt_predict = opt_predict %>% as.factor()
+        
+        # Need to convert factor names to match the target vector and ensure all potential factor levels are included in the predictions, even if a certain factor level wasn't predicted
+        opt_predict = recode_factor(opt_predict, BETA = "Beta",
+                                    OMI = "Omicron",
+                                    DELTA = "Delta",
+                                    WT = "WT")
+        levels(opt_predict) = c(levels(opt_predict), "Beta", "Omicron", "Delta", "WT")
+
+        accuracy = Accuracy(opt_predict, y_test)
+        acc_list = c(acc_list, accuracy)
+        
+        coef_imp = varImp(trained_model)
+      }
+  }
+  return(list("Accuracy" = acc_list,
+              "TrainResults" = train_results_list))
+}
+
+# rf_interpolated_mod1 takes dab18_interpol_df 
+mod_test = rf_interpolated_modl(df=dab18_interpol_df,
+                                target='target_vector',
+                                k1=3,
+                                num_repeats=3)
+
+mean(unlist(mod_test$Accuracy))
+mod_test$TrainResults$Kappa
+
+# dab19_mod_test = rf_interpolated_modl(df=dab19_interpol_df,
+#                                 target='target_vector',
+#                                 k1=3,
+#                                 num_repeats=3)
+# 
+# dab19_mod_test
+# mean(unlist(dab19_mod_test))
+
+```
+
+```{r}
+svm_interpolated_modl = function(df,
+                                target,
+                                k1,
+                                num_repeats){
+  performance_df = NULL
+  acc_list = list()
+  train_results_list = list()
+  
+  for (rep in 1:num_repeats){
+      kfold_ind = groupKFold(group=df$Replicates, k=k1)
+      
+      for (fold in 1:k1){
+        train = df[kfold_ind[[fold]],]
+        test = df[-kfold_ind[[fold]],]
+
+        model_formula = paste(target, '~', '.') %>% as.formula()
+        
+        train_control = trainControl(method='repeatedcv',
+                                     number=5,
+                                     repeats=3)
+        
+        # I could also include a weight matrix that places a heavier weight onto the original concentration points
+        train = interpolate_split_data(train,
+                                       num_points = 100)
+        
+        # Select only fluorescence and target vector columns (drops conc and replicate cols)
+        train = train %>% select(starts_with(c('dAb','target')))
+        test = test %>% select(starts_with(c('dAb','target')))
+        
+        # Preprocess data
+        preproc = preProcess(train, method=c('center','scale'))
+        
+        train = predict(preproc, train)
+        test = predict(preproc, test)
+        
+        # x_train = train %>% select(-target)
+        # y_train = train[[target]]
+        # print(x_train)
+        # 
+        # x_test = test %>% select(-target)
+        y_test = test[[target]]
+        
+        trained_model = train(model_formula,
+                              data=train,
+                              method='svmRadial',
+                              trControl=train_control,
+                              metric='Kappa',
+                              tuneLength=15)
+        train_results = trained_model$results
+        train_results_list = c(train_results_list, train_results)
+        
+        opt_predict = predict(trained_model, test,
+                              type='raw')
+        
+        opt_predict = opt_predict %>% as.factor()
+        
+        # Need to convert factor names to match the target vector and ensure all potential factor levels are included in the predictions, even if a certain factor level wasn't predicted
+        opt_predict = recode_factor(opt_predict, BETA = "Beta",
+                                    OMI = "Omicron",
+                                    DELTA = "Delta",
+                                    WT = "WT")
+        levels(opt_predict) = c(levels(opt_predict), "Beta", "Omicron", "Delta", "WT")
+
+        accuracy = Accuracy(opt_predict, y_test)
+        acc_list = c(acc_list, accuracy)
+        
+      }
+  }
+  return(list("Accuracy" = acc_list,
+              "TrainResults" = train_results_list))
+}
+```
+
