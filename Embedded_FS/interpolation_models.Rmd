@@ -1,5 +1,4 @@
 ```{r}
-library(tidyverse)
 library(caret)
 library(ggplot2)
 library(stats)
@@ -10,6 +9,8 @@ library(roxygen2)
 library(RColorBrewer)
 library(ranger)
 library(MLmetrics)
+library(tidyverse)
+select <- dplyr::select
 ```
 
 ```{r}
@@ -145,8 +146,6 @@ interpolate_split_data = function(data,
   
   interpolated_df = do.call(rbind, interpolated_dfs)
   target_vector = gsub(".*_", "", interpolated_df$Replicate)
-  print(interpolated_df)
-  print(length(target_vector))
   interpolated_df = interpolated_df %>% mutate("target_vector" = target_vector,
                                                .before = conc)
   return(interpolated_df)
@@ -157,7 +156,7 @@ dab18_interpolated = interpolate_split_data(data=dab18_train,
 # dab19_interpolated = interpolate_split_data(data=dab19_train)
 dab18_interpolated
 
-for (fold in 1:3){
+for (fold in 1:5){
   print(paste('fold: ',fold))
   temp_train = dab18_interpol_df[dab18_split[[fold]],]
   print(temp_train)
@@ -179,12 +178,17 @@ ggplot(dab18_train, aes(x=Conc., y=dAb18_cAb25, color = Replicates))+
 ```
 
 ```{r}
+# What do I want to know. I want to know the classes that are most frequently predicted incorrectly. That can be seen with a confusion matrix. However, I also want to get an idea of how concentration effects predictive accuracy
+```
+
+
+```{r RF model}
 # Training random forest models
 rf_interpolated_modl = function(df,
                                 target,
                                 k1,
-                                num_repeats.
-                                n_points){
+                                num_repeats,
+                                n_points=100){
   performance_df = NULL
   acc_list = list()
   train_results_list = list()
@@ -262,7 +266,8 @@ rf_interpolated_modl = function(df,
 mod_test = rf_interpolated_modl(df=dab18_interpol_df,
                                 target='target_vector',
                                 k1=3,
-                                num_repeats=3)
+                                num_repeats=3,
+                                n_points=500)
 
 mean(unlist(mod_test$Accuracy))
 mod_test$TrainResults$Kappa
@@ -277,11 +282,12 @@ mod_test$TrainResults$Kappa
 
 ```
 
-```{r}
+```{r svm model}
 svm_interpolated_modl = function(df,
                                 target,
                                 k1,
-                                num_repeats){
+                                num_repeats,
+                                n_points=100){
   performance_df = NULL
   acc_list = list()
   train_results_list = list()
@@ -301,7 +307,7 @@ svm_interpolated_modl = function(df,
         
         # I could also include a weight matrix that places a heavier weight onto the original concentration points
         train = interpolate_split_data(train,
-                                       num_points = 100)
+                                       num_points = n_points)
         
         # Select only fluorescence and target vector columns (drops conc and replicate cols)
         train = train %>% select(starts_with(c('dAb','target')))
@@ -349,5 +355,107 @@ svm_interpolated_modl = function(df,
   return(list("Accuracy" = acc_list,
               "TrainResults" = train_results_list))
 }
+
+svm_test = svm_interpolated_modl(df=dab18_interpol_df,
+                                target='target_vector',
+                                k1=5,
+                                num_repeats=1,
+                                n_points=500)
+
+mean(unlist(svm_test$Accuracy))
+svm_test$TrainResults$Kappa
 ```
 
+```{r warning=FALSE}
+lasso_interpolated_modl = function(df,
+                                target,
+                                k1,
+                                num_repeats,
+                                n_points=100){
+  performance_df = NULL
+  acc_list = list()
+  train_results_list = list()
+  confusion_df_list = list()
+  
+  for (rep in 1:num_repeats){
+      kfold_ind = groupKFold(group=df$Replicates, k=k1)
+
+      for (fold in 1:k1){
+        train = df[kfold_ind[[fold]],]
+        test = df[-kfold_ind[[fold]],]
+
+        model_formula = paste(target, '~', '.') %>% as.formula()
+        
+        # I could also include a weight matrix that places a heavier weight onto the original concentration points
+        train = interpolate_split_data(train,
+                                       num_points = n_points)
+        
+        # fold_id = groupKFold(group=train$Replicate, k=5)
+        # print(fold_id)
+        
+        # Select only fluorescence and target vector columns (drops conc and replicate cols)
+        train = train %>% select(starts_with(c('dAb','target')))
+        test = test %>% select(starts_with(c('dAb','target')))
+        
+        # Preprocess data
+        preproc = preProcess(train, method=c('center','scale'))
+        
+        train = predict(preproc, train)
+        test = predict(preproc, test)
+        
+        x_train_matrix = model.matrix(model_formula, train)
+        y_train = train[[target]]
+        
+        x_test_matrix = model.matrix(model_formula, test)
+        y_test = test[[target]]
+        
+        # I should specificy a foldid, since the wa
+        model = cv.glmnet(x_train_matrix,
+                          y_train,
+                          family='multinomial',
+                          type.multinomial='grouped',
+                          type.measure='class',
+                          nfold=5,
+                          parallel=T,
+                          alpha=1,
+                          intercept=F)
+        
+        train_results = model$glmnet.fit
+        train_results_list = c(train_results_list, train_results)
+        
+        opt_predict = predict(model,
+                              newx=x_test_matrix,
+                              type='class',
+                              s=model$lambda.1se)
+        
+        opt_predict = as.factor(opt_predict)
+        
+        # Need to convert factor names to match the target vector and ensure all potential factor levels are included in the predictions, even if a certain factor level wasn't predicted
+        opt_predict = recode_factor(opt_predict, BETA = "Beta",
+                                    DELTA = "Delta",
+                                    OMI = "Omicron",
+                                    WT = "WT")
+        levels(opt_predict) = c(levels(opt_predict), "Beta", "Delta", "Omicron", "WT")
+
+        accuracy = Accuracy(opt_predict, y_test)
+        acc_list = c(acc_list, accuracy)
+        print(ConfusionMatrix(opt_predict, y_test))
+        confMatrix = ConfusionMatrix(opt_predict, y_test)
+        confusion_df_list[[(length(confusion_df_list)+1)]] = confMatrix
+      }
+  }
+  return(list("Accuracy" = acc_list,
+              "TrainResults" = train_results_list,
+              "confusion_matrices" = confusion_df_list))
+}
+
+lasso_test = lasso_interpolated_modl(df=dab18_interpol_df,
+                                target='target_vector',
+                                k1=4,
+                                num_repeats=3,
+                                n_points=25)
+
+mean(unlist(lasso_test$Accuracy))
+(lasso_test$confusion_matrices)
+lasso_test$TrainResults$lambda
+```
