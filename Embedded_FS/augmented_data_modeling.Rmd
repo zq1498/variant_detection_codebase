@@ -1,0 +1,281 @@
+---
+title: "augmented_data_modeling"
+output: html_document
+date: "2023-08-09"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(caret)
+library(ranger)
+library(ggplot2)
+library(doParallel)
+library(gmodels)
+library(MLmetrics)
+library(ggridges)
+```
+
+```{r}
+augmented_dab18_data = read.csv("augmented_dab18_data.csv")
+augmented_dab18_data = augmented_dab18_data %>% select(-X) %>% mutate(target_vector = case_when(
+  target_vector == "Omi" ~ "Omicron",
+  .default = target_vector
+))
+
+augmented_dab19_data = read.csv("augmented_dab19_data.csv")
+augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vector = case_when(
+  target_vector == "Omi" ~ "Omicron",
+  .default = target_vector
+))
+augmented_dab18_data
+og_dab18_data = augmented_dab18_data[289:384,]
+og_dab19_data = augmented_dab19_data[289:384,]
+
+min(og_dab18_data$Conc.)
+
+aug_dab18_data = augmented_dab18_data[1:288, ]
+aug_dab18_data
+og_dab18_data
+aug_dab18_data
+aug_dab18_data[,3:13]
+aug_18_nzv = nearZeroVar(aug_dab18_data[,3:13], saveMetrics = T)
+aug_18_nzv
+```
+```{r}
+# Visualizing dose response of the original and augmented data
+std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
+aug_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
+                                                   names_to = 'pairs',
+                                                   values_to = 'fluorescence') %>%
+  ggplot(aes(x=Conc., y=fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(0,5))+
+  scale_x_log10()
+
+aug_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
+                                                   names_to = 'pairs',
+                                                   values_to = 'fluorescence') %>% 
+  group_by(Conc., target_vector, pairs) %>%
+  summarise(average_fluorescence = mean(fluorescence),
+            se = std.err(fluorescence)) %>% 
+  ggplot(aes(x=Conc., y=average_fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(0,5))+
+  scale_x_log10()
+
+og_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
+                                                   names_to = 'pairs',
+                                                   values_to = 'fluorescence') %>%
+  group_by(Conc., target_vector, pairs) %>%
+  summarise(average_fluorescence = mean(fluorescence),
+            se = std.err(fluorescence)) %>% 
+  ggplot(aes(x=Conc., y=average_fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(2,5))+
+  scale_x_log10()
+
+# Visualizing the original distributions, augmented distributions, and combined distributions
+# centering both data sets independently
+og_dab18_data
+centered_og_18_data = og_dab18_data
+centered_og_18_data[,3:13] = scale(og_dab18_data[,3:13], scale = F)
+
+centered_aug_18_data = aug_dab18_data
+centered_aug_18_data[,3:13] = scale(aug_dab18_data[,3:13], scale = F)
+
+centered_augmented_18_data = bind_rows(centered_aug_18_data, centered_og_18_data)
+
+source_tag = c(rep('augmented', 288), rep('original', 96))
+
+aug_18_ridge = centered_augmented_18_data %>% mutate(Source = source_tag) %>% 
+  filter(Conc. > 0.015) %>%
+  select(-Conc.) %>% 
+  pivot_longer(cols = -c(target_vector, Source),
+               names_to = 'pairs',
+               values_to = "Fluorescence") %>% 
+  ggplot(aes(x=Fluorescence, y=Source)) +
+  geom_density_ridges()
+aug_18_ridge
+
+aug_18_density = centereed_augmented_18_data %>% mutate(Source = source_tag) %>% 
+  filter(Conc. > 0.015) %>%
+  select(-Conc.) %>% 
+  pivot_longer(cols = -c(target_vector, Source),
+               names_to = 'pairs',
+               values_to = "Fluorescence") %>% 
+  ggplot(aes(x=Fluorescence)) +
+  geom_density()
+
+aug_18_density
+
+# Visualizing the original boxplots, augmented boxplots, and combined boxplots - all centered data
+og_boxplots = centered_og_18_data %>% select(-Conc.) %>%
+  pivot_longer(
+    cols = -c(target_vector),
+    names_to = 'pairs',
+    values_to = 'fluorescence'
+  ) %>%
+  ggplot(aes(x = target_vector, y = fluorescence)) +
+  geom_boxplot()+
+  facet_wrap('pairs')
+
+aug_boxplots = aug_dab18_data %>% select(-Conc.) %>% 
+  pivot_longer(
+    cols = -target_vector,
+    names_to = 'pairs',
+    values_to = 'fluorescence'
+  ) %>% 
+  ggplot(aes(x=target_vector, y=fluorescence))+
+  geom_boxplot()+
+  facet_wrap('pairs')
+
+og_boxplots
+aug_boxplots
+
+denoise_augment18_data = aug_dab18_data
+denoise_augment18_data[3:13][denoise_augment18_data[3:13]<1.0] = 0
+aug_dab18_data
+denoise_augment18_data
+
+
+augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vector = case_when(
+  target_vector == "Omi" ~ "Omicron",
+  .default = target_vector
+))
+# Zeroing in on outliers from augmented data set
+```
+
+```{r}
+# Random forest model - dAb18
+augmented_random_forest_model = function(dataset,
+                                         target,
+                                         k_folds,
+                                         model_type){
+  pred_concs = NULL
+  
+  # Thresholding at 0.1 ng/ml corresponds to a threshold of 71.4 pM
+  dataset = dataset %>% filter(Conc. > 0.4)
+  folds = createFolds(dataset[[target]], k = k_folds)
+  train_control = trainControl(method = "repeatedcv",
+                               number = 5,
+                               repeats = 3)
+  model_formula = paste(target, '~', ".", "-Conc.") %>% as.formula()
+  
+  for (fold in 1:k_folds){
+    train = dataset[-folds[[fold]],]
+    test = dataset[folds[[fold]],]
+    
+    test_conc = test$Conc.
+    
+    preprocess = preProcess(train, method = c("center", "scale"))
+    train = predict(preprocess, train)
+    test = predict(preprocess, test)
+    
+    x_test = test %>% select(-target)
+    y_test = test[[target]]
+    
+    if (model_type == 'rf'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = 'ranger',
+                            importance = 'impurity',
+                            trControl = train_control)
+
+      predictions = predict(trained_model, x_test,
+                            type = 'raw')
+    }
+    
+    if (model_type == 'svm'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = 'linearSVM',
+                            trControl = train_control)
+      predictions = predict(trained_model, x_test,
+                            type = 'raw')
+    }
+    
+  # print(varImp(trained_model))
+  accuracy = Accuracy(predictions, test[[target]])
+  print(accuracy)
+  
+  pred_df = data.frame("concentration" = test_conc,
+                       "predictions" = predictions,
+                       "labels" = y_test)
+  
+  if (is.null(pred_concs)){
+    pred_concs = pred_df
+  }
+  else {
+    pred_concs = pred_concs %>% bind_rows(pred_concs, pred_df)
+  }
+  # print(trained_model)
+  }
+  pred_concs = pred_concs %>% arrange(desc(concentration))
+  return(pred_concs)
+}
+
+
+all_data = augmented_random_forest_model(dataset = augmented_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
+
+aug_only = augmented_random_forest_model(dataset = aug_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
+
+original_only = augmented_random_forest_model(dataset = og_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
+
+denoise_augment18 = augmented_random_forest_model(dataset = denoise_augment18_data,
+                                                  target = "target_vector",
+                                                  k_folds = 5,
+                                                  model_type = "rf")
+
+# Percent correct by concentration for all data
+percent_correct_visualization = function(dataset, color){
+  viz = dataset %>% mutate(across(concentration, round, 4)) %>%
+    mutate_at('concentration', as.factor) %>%  mutate(match = case_when(predictions == labels ~ 1,
+                                                                        .default = 0)) %>% group_by(concentration) %>%
+    summarize(num_correct = sum(match),
+              total = n()) %>%
+    mutate(percent_correct = (round(num_correct / total, 4)) * 100) %>%
+    ggplot(aes(x = concentration, y = percent_correct)) +
+    geom_bar(stat = 'identity',
+             fill = color) +
+    geom_text(aes(label = percent_correct),
+              vjust  = 1.5,
+              color = 'white') +
+    theme_classic() +
+    ylab('Percent Correct') +
+    xlab('Concentration') +
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.001))
+  
+  return(viz)
+}
+
+all_data_perc_correct = percent_correct_visualization(all_data, '#1D6363')
+
+og_data_only_perc_correct = percent_correct_visualization(original_only, '#1D6363')
+
+aug_only_perc_correct = percent_correct_visualization(aug_only, '#1D6363')
+
+denoise_augment18_perc_correct = percent_correct_visualization(denoise_augment18, '#1D6363')
+```
+
+```{r}
+# model to predict concentration, then split the data, then train two separate models on the high and low concentration
+
+```
+
