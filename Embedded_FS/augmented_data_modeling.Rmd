@@ -13,15 +13,54 @@ library(doParallel)
 library(gmodels)
 library(MLmetrics)
 library(ggridges)
+library(outliers)
 ```
 
 ```{r}
-augmented_dab18_data = read.csv("augmented_dab18_data.csv")
-augmented_dab18_data = augmented_dab18_data %>% select(-X) %>% mutate(target_vector = case_when(
-  target_vector == "Omi" ~ "Omicron",
-  .default = target_vector
-))
+augmented_18_data_2 = read.csv("covspot_data_aug_2_processed.csv")
+augmented_18_data_2 = augmented_18_data_2 %>% rename(Conc. = concentration)
+write.csv(augmented_18_data_2, "augmented_18_data_2.csv", row.names = F)
 
+augmented_18_data_1 = read.csv("covspot_data_aug_1_processed.csv")
+augmented_18_data_1 = augmented_18_data_1 %>% rename(Conc. = concentration)
+augmented_18_data_1
+augmented_18_data_1$target_vector[augmented_18_data_1$target_vector=="Omi"] = "Omicron"
+
+write.csv(augmented_18_data_1, "augmented_18_data_1.csv", row.names = F)
+
+augmented_18_data_2
+
+augmented_dab18_data
+```
+
+```{r}
+# Fixing data set based on mistakes made during experiment
+
+
+
+# Checking for outliers
+ot = combined_augmented_data %>% group_by(Conc., target_vector) %>% select(starts_with("cAb")) %>% group_split()
+gt = ot[[1]]
+gt
+t = grubbs.test(gt$cAb8, two.sided = T)
+t
+#if p value is less than 0.05, then flag anf remove data point (though I wont know if it's the highest or lowest)
+t$p.value
+
+gt %>% select(starts_with('cAb')) %>% mutate_all()
+
+
+for (set in ot){
+  
+}
+check_outliers = function(dataset){
+  
+}
+
+
+```
+
+```{r}
 augmented_dab19_data = read.csv("augmented_dab19_data.csv")
 augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vector = case_when(
   target_vector == "Omi" ~ "Omicron",
@@ -41,6 +80,7 @@ aug_dab18_data[,3:13]
 aug_18_nzv = nearZeroVar(aug_dab18_data[,3:13], saveMetrics = T)
 aug_18_nzv
 ```
+
 ```{r}
 # Visualizing dose response of the original and augmented data
 std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
@@ -161,8 +201,8 @@ augmented_random_forest_model = function(dataset,
                                          model_type){
   pred_concs = NULL
   
-  # Thresholding at 0.1 ng/ml corresponds to a threshold of 71.4 pM
-  dataset = dataset %>% filter(Conc. > 0.4)
+  # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
+  dataset = dataset %>% filter(Conc. > .4)
   folds = createFolds(dataset[[target]], k = k_folds)
   train_control = trainControl(method = "repeatedcv",
                                number = 5,
@@ -187,17 +227,29 @@ augmented_random_forest_model = function(dataset,
                             data = train,
                             method = 'ranger',
                             importance = 'impurity',
-                            trControl = train_control)
+                            trControl = train_control,
+                            tuneLength = 15)
 
       predictions = predict(trained_model, x_test,
                             type = 'raw')
     }
     
-    if (model_type == 'svm'){
+    if (model_type == 'svmLinear'){
       trained_model = train(model_formula,
                             data = train,
-                            method = 'linearSVM',
-                            trControl = train_control)
+                            method = 'svmLinear',
+                            trControl = train_control,
+                            tuneLength = 20)
+      predictions = predict(trained_model, x_test,
+                            type = 'raw')
+    }
+    
+    if (model_type == 'svmRadial'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = 'svmRadial',
+                            trControl = train_control,
+                            tuneLength = 20)
       predictions = predict(trained_model, x_test,
                             type = 'raw')
     }
@@ -222,7 +274,53 @@ augmented_random_forest_model = function(dataset,
   return(pred_concs)
 }
 
+second_augment = augmented_random_forest_model(dataset = augmented_18_data_2,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
 
+second_augment_perc_correct_rf = percent_correct_visualization(second_augment, '#1D6363')
+
+first_augment_rf = augmented_random_forest_model(dataset = augmented_18_data_1,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
+
+first_augment_perc_correct_rf = percent_correct_visualization(first_augment_rf, '#1D6363')
+
+combined_augmented_data = bind_rows(augmented_18_data_1, augmented_18_data_2)
+combined_augmented_data
+write.csv(combined_augmented_data, "combined_augmented_data.csv", row.names = F)
+combined_augment_with_batch = combined_augmented_data
+combined_augment_with_batch$batch = c(rep(1, 288), rep(2, 456))
+write.csv(combined_augment_with_batch, "combined_augment_with_batch.csv", row.names = F)
+
+combined_augment_with_batch
+
+combined_augment_rf = augmented_random_forest_model(dataset = combined_augmented_data,
+                              target = "target_vector",
+                              k_folds = 10,
+                              model_type = "rf")
+
+combined_augment_perc_correct_rf = percent_correct_visualization(combined_augment_rf, "#1D6363")
+
+first_augment_perc_correct_rf
+second_augment_perc_correct_rf
+combined_augment_perc_correct_rf
+
+# Takeaways from testing 0.9, 1, and 2 ng/ml cutoffs:
+#   -For low concentrations (0.97 ng/mL), the combined data set outperforms both the individual datasets , but not by a huge amount
+#   -First augment generally performs the best between 3.9 and 125 but usually is the worst at the lowest and highest concentration
+
+# Still need to check for outliers
+```
+
+```{r}
+# Comparing batches with kmeans and PCA
+```
+
+
+```{r}
 all_data = augmented_random_forest_model(dataset = augmented_dab18_data,
                               target = "target_vector",
                               k_folds = 5,
@@ -243,6 +341,66 @@ denoise_augment18 = augmented_random_forest_model(dataset = denoise_augment18_da
                                                   k_folds = 5,
                                                   model_type = "rf")
 
+aug_only_svm = augmented_random_forest_model(dataset = aug_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "svmLinear")
+
+aug_only_svm_rad = augmented_random_forest_model(dataset = aug_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "svmRadial")
+
+original_only_svm = augmented_random_forest_model(dataset = og_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "svmLinear")
+
+original_only_rad = augmented_random_forest_model(dataset = og_dab18_data,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "svmRadial")
+
+
+
+nice_blue = '#1D6363'
+
+all_data_perc_correct = percent_correct_visualization(all_data, '#1D6363')
+
+og_data_only_perc_correct = percent_correct_visualization(original_only, '#1D6363')
+
+aug_only_perc_correct = percent_correct_visualization(aug_only, '#1D6363')
+
+denoise_augment18_perc_correct = percent_correct_visualization(denoise_augment18, '#1D6363')
+
+aug_only_perc_correct
+second_augment_perc_correct
+
+all_data_perc_correct
+ggsave("all_data_perc_correct_rf.png", device = "png")
+og_data_only_perc_correct
+ggsave("og_data_perc_correct_rf.png", device = "png")
+aug_only_perc_correct
+ggsave("aug_data_perc_correct_rf.png", device = "png")
+# SVM visualizations
+aug_only_svm_perc_correct = percent_correct_visualization(aug_only_svm, nice_blue)
+aug_only_svm_perc_correct
+
+ggsave("aug_1_svm_results.png", device = "png")
+
+og_data_only_svm_perc_correct = percent_correct_visualization(original_only_svm, '#1D6363')
+og_data_only_svm_perc_correct
+ggsave("og_data_svm_results.png", device = "png")
+
+aug_only_svmRad_perc_correct = percent_correct_visualization(aug_only_svm_rad, nice_blue)
+aug_only_svmRad_perc_correct
+ggsave("aug_data_rad_svm_results.png", device = "png")
+
+og_data_only_svmRad_perc_correct = percent_correct_visualization(original_only_rad, '#1D6363')
+og_data_only_svmRad_perc_correct
+```
+
+```{r}
 # Percent correct by concentration for all data
 percent_correct_visualization = function(dataset, color){
   viz = dataset %>% mutate(across(concentration, round, 4)) %>%
@@ -264,18 +422,17 @@ percent_correct_visualization = function(dataset, color){
   
   return(viz)
 }
+```
 
-all_data_perc_correct = percent_correct_visualization(all_data, '#1D6363')
-
-og_data_only_perc_correct = percent_correct_visualization(original_only, '#1D6363')
-
-aug_only_perc_correct = percent_correct_visualization(aug_only, '#1D6363')
-
-denoise_augment18_perc_correct = percent_correct_visualization(denoise_augment18, '#1D6363')
+```{r}
+# Filtering by concentration > 0.4, I have 310 sample. So the majority of my 
+# samples are not being used. I should take fewer samples outside of the range.
+combined_augmented_data %>% filter(Conc. > .4)
 ```
 
 ```{r}
 # model to predict concentration, then split the data, then train two separate models on the high and low concentration
+# SVMs perform better at lower concentrations, RFs perform between at high concentrations.
 
 ```
 
