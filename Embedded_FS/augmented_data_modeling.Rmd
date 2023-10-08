@@ -14,53 +14,461 @@ library(gmodels)
 library(MLmetrics)
 library(ggridges)
 library(outliers)
+library(gdata)
 ```
 
 ```{r}
 augmented_18_data_2 = read.csv("covspot_data_aug_2_processed.csv")
 augmented_18_data_2 = augmented_18_data_2 %>% rename(Conc. = concentration)
-write.csv(augmented_18_data_2, "augmented_18_data_2.csv", row.names = F)
+# write.csv(augmented_18_data_2, "augmented_18_data_2.csv", row.names = F)
 
 augmented_18_data_1 = read.csv("covspot_data_aug_1_processed.csv")
 augmented_18_data_1 = augmented_18_data_1 %>% rename(Conc. = concentration)
-augmented_18_data_1
 augmented_18_data_1$target_vector[augmented_18_data_1$target_vector=="Omi"] = "Omicron"
 
-write.csv(augmented_18_data_1, "augmented_18_data_1.csv", row.names = F)
+# write.csv(augmented_18_data_1, "augmented_18_data_1.csv", row.names = F)
 
+augmented_18_data_1 = augmented_18_data_1 %>% select(-cAb13)
+augmented_18_data_2 = augmented_18_data_2 %>% select(-cAb13)
+
+# Create combined data set
+combined_augmented_data = bind_rows(augmented_18_data_1, augmented_18_data_2)
+
+# Make non-cab cols unordered factors
+combined_augmented_data = combined_augmented_data %>% 
+            mutate(across(c("Replicate", "Conc.", "target_vector"), as.factor))
+combined_augmented_data
+combined_augment_with_batch = combined_augmented_data
+combined_augment_with_batch$batch = c(rep(1, 288), rep(2, 456))
+```
+
+```{r ALL THE MOST UP TO DATE OUTLIER HANDLING FUNCTIONS}
+# Provided a dataset, this function can identify which values are outliers based
+# on the distributions of values with the same concentration and variant. I then
+# provides a data frame that contains relevant information about identified
+# outliers that can be used to find and replace that outlier later on
+check_outliers = function(dataset, alpha = 0.05) {
+  flag_df = NULL
+  current_variant = unique(dataset$target_vector)
+  current_conc = unique(dataset$Conc.)
+  
+  cols_to_check = dataset %>% select(starts_with("cAb"))
+  cab_names = colnames(cols_to_check)
+  col_num = 1
+  
+  for (array in cols_to_check) {
+    test = grubbs.test(array, type = 10)
+    test_stat = test$statistic
+    test_alpha = test$p.value
+    
+    if (test_alpha <= alpha) {
+      alternative_hypo = test$alternative
+      higher_or_lower = ifelse(grepl('highest', alternative_hypo), 'higher', 'lower')
+      
+      flagged_cAb = cab_names[[col_num]]
+      flag_report = data.frame(
+        variant = current_variant,
+        concentration = current_conc,
+        cAb = flagged_cAb,
+        higher_lower = higher_or_lower
+      )
+      
+      if (is.null(flag_df)) {
+        flag_df = flag_report
+      }
+      else{
+        flag_df = bind_rows(flag_df, flag_report)
+      }
+    }
+    col_num = col_num + 1
+  }
+  return(flag_df)
+}
+
+# Provided with a data frame containing information about individual outliers (called flag_df here), it will find those outlier values and add additional information to the original flag_df, mainly the specific outlier value and the mean of the group without the outlier included
+enhance_flag_df = function(flag_df, dataset){
+  # Loop over all rows of flag df, then build an array row by row that contains
+  # the max and mean (na.rm = T), then add that to the original data frame and 
+  # return it
+  num_rows = nrow(flag_df)
+  enhanced_df = NULL
+  for (iter in 1:num_rows){
+    current_outlier_row = flag_df[iter,]
+    
+    current_outlier_array = dataset %>% filter(target_vector == current_outlier_row$variant,
+                                               Conc. == current_outlier_row$concentration) %>% 
+      select(current_outlier_row$cAb)
+    
+    outlier_cab = current_outlier_row$cAb
+    
+    outlier_col = current_outlier_array[current_outlier_row$cAb]
+
+    if (current_outlier_row$higher_lower == 'higher'){
+      # Excluding the maximum value, obtain the mean of the column
+      outlier_value = max(outlier_col)
+      temp_col = outlier_col[[outlier_cab]]
+      arr_without_max = temp_col[temp_col <  outlier_value]
+      mean_val = mean(arr_without_max, na.rm = T)
+    }
+
+    else{
+      # Excluding the minimum value, obtain the mean of the column
+      outlier_value = min(outlier_col)
+      temp_col = outlier_col[[outlier_cab]]
+      arr_without_min = temp_col[temp_col > outlier_value]
+      mean_val = mean(arr_without_min, na.rm = T)
+    }
+    
+    extra_info=data.frame(outlier_value = outlier_value,
+                          mean_value = mean_val)
+    extra_info$mean_value = ifelse(is.nan(extra_info$mean_value), 0, extra_info$mean_value)
+
+    extra_info_df = bind_cols(current_outlier_row, extra_info)
+    
+    if (is.null(enhanced_df)){
+      enhanced_df = extra_info_df
+    }
+    else{
+      enhanced_df = bind_rows(enhanced_df, extra_info_df)
+    }
+  }
+  return(enhanced_df)
+}
+
+# Given an enhanced flag_df and the original dataset, this function will find
+# all outlier values and replace them with the mean value or NA if you'd like to
+# use an alternative imputation method. It returns a dataset of the same
+# dimensions as the original, with the outlier values changed.
+replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
+  row_numbers = 1:nrow(dataset)
+  dataset = bind_cols("row_number" = row_numbers, dataset)
+  matching_row_arr = list()
+  
+  for(i in 1:nrow(enhanced_flag_df)) {
+    current_conc = enhanced_flag_df$concentration[i]
+    current_variant = enhanced_flag_df$variant[i]
+    outlier_col = enhanced_flag_df$cAb[i]
+    outlier_val = enhanced_flag_df$outlier_value[i]
+    # Replacement value can either be the mean value contained in enhanced_flag_df
+    # or it can just replace with NA
+    replacement_value = enhanced_flag_df$mean_value[i]# ifelse(impute_method=='mean', enhanced_flag_df$mean_value[i], NA)
+    
+    # Locate the subset of rows that contain the outlier value
+    matching_subset = dataset %>% 
+      filter(Conc. == current_conc, target_vector == current_variant)
+    
+    # Find the single row within the matching subset where the outlier col has
+    # the outlier val, then take the first column (the row number) and use that
+    # to set the value to the mean in the original dataset
+    matching_row = as.tibble(matching_subset[matching_subset[outlier_col]==outlier_val])
+    
+    matching_row_num = matching_subset[matching_subset[outlier_col]==outlier_val][1]
+    matching_row_arr = c(matching_row_arr, matching_row_num)
+    
+    cat("i:", i, ", current_conc:", current_conc, ", current_variant:", 
+        current_variant, ", current_cab:", outlier_col, ", outlier_val:", outlier_val,
+        ", replacement_value:", replacement_value,
+        ", matching_row_num:", matching_row_num, "\n")
+    # Print the replaced row
+    print(dataset[matching_row_num, outlier_col])
+    # Replace outlier value with replacement value using the row number found above
+    dataset[matching_row_num, outlier_col] = replacement_value
+    
+    
+  }
+  return(list('dataset' = dataset,
+              'row_nums_arr' = matching_row_arr))
+}
+
+
+#------------------------------------------------------------------------------#
+# Outlier control function
+main_outliers_detection_function = function(dataset, threshold) {
+  outlier_test_df_list = dataset %>% filter(Conc. > threshold) %>% group_by(Conc., target_vector) %>% group_split()
+  flag_df = NULL
+  
+  for (df in outlier_test_df_list) {
+    outlier_check = check_outliers(df)
+    
+    if (is.null(flag_df)) {
+      flag_df = outlier_check
+    }
+    
+    else{
+      flag_df = bind_rows(flag_df, outlier_check)
+    }
+  }
+  enhanced_flag_df = enhance_flag_df(flag_df, dataset)
+  
+  # Now that we've returned a more robust version of the flag_df, we can use that
+  # information to iterate over the entire data set and replace outlier values 
+  # with either the mean value of their group or with NA (for MICE)
+  
+  outlier_removed_df = replace_outliers(dataset, enhanced_flag_df)
+  outlier_removed_df = outlier_removed_df$dataset %>% select(-row_number)
+  return(outlier_removed_df)
+}
+
+outlier_removed_df = main_outliers_detection_function(combined_augmented_data, 0.1)
+```
+
+
+
+```{r}
+replace_outliers_with_mean = function(dataset, enhanced_flag_df){
+  dataset %>% 
+    rowwise() %>% 
+    mutate(
+      replaced_values = list(
+        pmap_dbl(enhanced_flag_df, ~{
+          column_name = ..1
+          outlier_value = ..2
+          mean_value = ..3
+          if(startsWith(column_name, 'cAb')) {
+            dataset[[column_name]] = ifelse(df[[column_name]] == outlier_value, mean_value, df[[column_name]])
+          }
+        })
+      )
+    ) %>% 
+    ungroup() %>% 
+    select(-replaced_values)
+  
+  return(dataset)
+}
+
+enhance_flagged_outliers <- function(dataset, enhanced_flag_df) {
+  colnames = colnames(dataset)
+  cols_to_replace = colnames[startsWith(colnames, "cAb")]
+  print(cols_to_replace)
+  dataset = dataset %>%
+    mutate(replaced_values = pmap_dbl(enhanced_flag_df, ~{
+      column_name <- ..1
+      outlier_value <- ..2
+      mean_value <- ..3
+      
+      if (column_name %in% cols_to_replace) {
+        dataset[[column_name]] <- ifelse(dataset[[column_name]] == outlier_value, mean_value, dataset[[column_name]])
+      }
+      dataset
+    })) %>%
+    select(-replaced_values) 
+    return(dataset)
+}
+
+enhance_flagged_outliers(combined_augmented_data, enhanced_flag_df)
+
+```
+```{r}
+
+replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
+  row_numbers = 1:nrow(dataset)
+  dataset = bind_cols("row_number" = row_numbers, dataset)
+  matching_row_arr = list()
+  
+  for(i in 1:nrow(enhanced_flag_df)) {
+    current_conc = enhanced_flag_df$concentration[i]
+    current_variant = enhanced_flag_df$variant[i]
+    outlier_col = enhanced_flag_df$cAb[i]
+    outlier_val = enhanced_flag_df$outlier_value[i]
+    # Replacement value can either be the mean value contained in enhanced_flag_df
+    # or it can just replace with NA
+    replacement_value = enhanced_flag_df$mean_value[i]# ifelse(impute_method=='mean', enhanced_flag_df$mean_value[i], NA)
+    
+    # Locate the subset of rows that contain the outlier value
+    matching_subset = dataset %>% 
+      filter(Conc. == current_conc, target_vector == current_variant)
+    
+    # Find the single row within the matching subset where the outlier col has
+    # the outlier val, then take the first column (the row number) and use that
+    # to set the value to the mean in the original dataset
+    matching_row = as.tibble(matching_subset[matching_subset[outlier_col]==outlier_val])
+    
+    matching_row_num = matching_subset[matching_subset[outlier_col]==outlier_val][1]
+    matching_row_arr = c(matching_row_arr, matching_row_num)
+    
+    cat("i:", i, ", current_conc:", current_conc, ", current_variant:", 
+        current_variant, ", current_cab:", outlier_col, ", outlier_val:", outlier_val,
+        ", replacement_value:", replacement_value,
+        ", matching_row_num:", matching_row_num, "\n")
+    # Print the replaced row
+    print(dataset[matching_row_num, outlier_col])
+    # Replace outlier value with replacement value using the row number found above
+    dataset[matching_row_num, outlier_col] = replacement_value
+    
+    
+  }
+  return(list('dataset' = dataset,
+              'row_nums_arr' = matching_row_arr))
+}
+# Current issue is that for some reason this above function is adding 9 rows to the tail of the dataset. The values that it adds are actually the correct mean value
+
+test_output = replace_outliers(combined_augmented_data, enhanced_flag_df)
+enhanced_flag_df
+unlist(test_output$row_nums_arr) > 744
+test_output_df = test_output$dataset %>% select(-row_number)
+test_output_df
+combined_augmented_data
+# length(unlist(test_output$row_nums_arr))
+# length(unique(unlist(test_output$row_nums_arr)))
+
+setdiff(test_output_df, combined_augmented_data)
+enhanced_flag_df
+test_reference = combined_augmented_data %>% filter(target_vector == 'Delta')
+identical(test_reference, test_output)
+
+combined_augmented_data
+distinct(enhanced_flag_df)
+enhanced_flag_df %>% group_by(concentration, variant, replicate) %>% summarise(n=n())
+
+which(is.na(test_output_df))
+
+test_output_df
+```
+
+
+```{r Dose respons visualization}
+DR_Viz = function(dataset){
+  std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
+  dataset %>% pivot_longer(cols = -c(target_vector, Conc.),
+                                                   names_to = 'pairs',
+                                                   values_to = 'fluorescence') %>% 
+  group_by(Conc., target_vector, pairs) %>%
+  summarise(average_fluorescence = mean(fluorescence),
+            se = std.err(fluorescence)) %>% 
+  ggplot(aes(x=Conc., y=average_fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(0,5))+
+  scale_x_log10()
+}
+
+DR_Viz(augmented_18_data_1)
+DR_Viz(augmented_18_data_2)
+DR_Viz(combined_augmented_data)
+```
+
+```{r}
+# Comparing batches with kmeans and PCA
+```
+
+```{r model training}
+# Random forest model - dAb18
+augmented_random_forest_model = function(dataset,
+                                         target,
+                                         k_folds,
+                                         model_type){
+  pred_concs = NULL
+  
+  # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
+  dataset = dataset %>% filter(Conc. > .9)
+  folds = createFolds(dataset[[target]], k = k_folds)
+  train_control = trainControl(method = "repeatedcv",
+                               number = 5,
+                               repeats = 3)
+  model_formula = paste(target, '~', ".", "-Conc.") %>% as.formula()
+  
+  for (fold in 1:k_folds){
+    train = dataset[-folds[[fold]],]
+    test = dataset[folds[[fold]],]
+    
+    test_conc = test$Conc.
+    
+    preprocess = preProcess(train, method = c("center", "scale"))
+    train = predict(preprocess, train)
+    test = predict(preprocess, test)
+    
+    x_test = test %>% select(-target)
+    y_test = test[[target]]
+    
+    if (model_type == 'rf'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = 'ranger',
+                            importance = 'impurity',
+                            trControl = train_control,
+                            tuneLength = 15)
+
+      predictions = predict(trained_model, x_test,
+                            type = 'raw')
+    }
+    
+    if (model_type == 'svmLinear'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = 'svmLinear',
+                            trControl = train_control,
+                            tuneLength = 20)
+      predictions = predict(trained_model, x_test,
+                            type = 'raw')
+    }
+    
+    if (model_type == 'svmRadial'){
+      trained_model = train(model_formula,
+                            data = train,
+                            method = 'svmRadial',
+                            trControl = train_control,
+                            tuneLength = 20)
+      predictions = predict(trained_model, x_test,
+                            type = 'raw')
+    }
+    
+  # print(varImp(trained_model))
+  accuracy = Accuracy(predictions, test[[target]])
+  print(accuracy)
+  
+  pred_df = data.frame("concentration" = test_conc,
+                       "predictions" = predictions,
+                       "labels" = y_test)
+  
+  if (is.null(pred_concs)){
+    pred_concs = pred_df
+  }
+  else {
+    pred_concs = pred_concs %>% bind_rows(pred_concs, pred_df)
+  }
+  # print(trained_model)
+  }
+  pred_concs = pred_concs %>% arrange(desc(concentration))
+  return(pred_concs)
+}
 augmented_18_data_2
 
-augmented_dab18_data
+first_augment_rf = augmented_random_forest_model(dataset = augmented_18_data_1,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
+
+first_augment_perc_correct_rf = percent_correct_visualization(first_augment_rf, '#1D6363')
+
+second_augment = augmented_random_forest_model(dataset = augmented_18_data_2,
+                              target = "target_vector",
+                              k_folds = 5,
+                              model_type = "rf")
+
+second_augment_perc_correct_rf = percent_correct_visualization(second_augment, '#1D6363')
+
+
+combined_augment_rf = augmented_random_forest_model(dataset = combined_augmented_data,
+                              target = "target_vector",
+                              k_folds = 10,
+                              model_type = "rf")
+
+combined_augment_perc_correct_rf = percent_correct_visualization(combined_augment_rf, "#1D6363")
+
+first_augment_perc_correct_rf
+second_augment_perc_correct_rf
+combined_augment_perc_correct_rf
+
+# Takeaways from testing 0.9, 1, and 2 ng/ml cutoffs:
+#   -For low concentrations (0.97 ng/mL), the combined data set outperforms both the individual datasets , but not by a huge amount
+#   -First augment generally performs the best between 3.9 and 125 but usually is the worst at the lowest and highest concentration
+
+# Still need to check for outliers
 ```
 
-```{r}
-# Fixing data set based on mistakes made during experiment
-
-
-
-# Checking for outliers
-ot = combined_augmented_data %>% group_by(Conc., target_vector) %>% select(starts_with("cAb")) %>% group_split()
-gt = ot[[1]]
-gt
-t = grubbs.test(gt$cAb8, two.sided = T)
-t
-#if p value is less than 0.05, then flag anf remove data point (though I wont know if it's the highest or lowest)
-t$p.value
-
-gt %>% select(starts_with('cAb')) %>% mutate_all()
-
-
-for (set in ot){
-  
-}
-check_outliers = function(dataset){
-  
-}
-
-
-```
-
-```{r}
+```{r dab19 data handling}
 augmented_dab19_data = read.csv("augmented_dab19_data.csv")
 augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vector = case_when(
   target_vector == "Omi" ~ "Omicron",
@@ -69,19 +477,9 @@ augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vec
 augmented_dab18_data
 og_dab18_data = augmented_dab18_data[289:384,]
 og_dab19_data = augmented_dab19_data[289:384,]
-
-min(og_dab18_data$Conc.)
-
-aug_dab18_data = augmented_dab18_data[1:288, ]
-aug_dab18_data
-og_dab18_data
-aug_dab18_data
-aug_dab18_data[,3:13]
-aug_18_nzv = nearZeroVar(aug_dab18_data[,3:13], saveMetrics = T)
-aug_18_nzv
 ```
 
-```{r}
+```{r original EDA}
 # Visualizing dose response of the original and augmented data
 std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
 aug_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
@@ -194,133 +592,6 @@ augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vec
 ```
 
 ```{r}
-# Random forest model - dAb18
-augmented_random_forest_model = function(dataset,
-                                         target,
-                                         k_folds,
-                                         model_type){
-  pred_concs = NULL
-  
-  # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
-  dataset = dataset %>% filter(Conc. > .4)
-  folds = createFolds(dataset[[target]], k = k_folds)
-  train_control = trainControl(method = "repeatedcv",
-                               number = 5,
-                               repeats = 3)
-  model_formula = paste(target, '~', ".", "-Conc.") %>% as.formula()
-  
-  for (fold in 1:k_folds){
-    train = dataset[-folds[[fold]],]
-    test = dataset[folds[[fold]],]
-    
-    test_conc = test$Conc.
-    
-    preprocess = preProcess(train, method = c("center", "scale"))
-    train = predict(preprocess, train)
-    test = predict(preprocess, test)
-    
-    x_test = test %>% select(-target)
-    y_test = test[[target]]
-    
-    if (model_type == 'rf'){
-      trained_model = train(model_formula,
-                            data = train,
-                            method = 'ranger',
-                            importance = 'impurity',
-                            trControl = train_control,
-                            tuneLength = 15)
-
-      predictions = predict(trained_model, x_test,
-                            type = 'raw')
-    }
-    
-    if (model_type == 'svmLinear'){
-      trained_model = train(model_formula,
-                            data = train,
-                            method = 'svmLinear',
-                            trControl = train_control,
-                            tuneLength = 20)
-      predictions = predict(trained_model, x_test,
-                            type = 'raw')
-    }
-    
-    if (model_type == 'svmRadial'){
-      trained_model = train(model_formula,
-                            data = train,
-                            method = 'svmRadial',
-                            trControl = train_control,
-                            tuneLength = 20)
-      predictions = predict(trained_model, x_test,
-                            type = 'raw')
-    }
-    
-  # print(varImp(trained_model))
-  accuracy = Accuracy(predictions, test[[target]])
-  print(accuracy)
-  
-  pred_df = data.frame("concentration" = test_conc,
-                       "predictions" = predictions,
-                       "labels" = y_test)
-  
-  if (is.null(pred_concs)){
-    pred_concs = pred_df
-  }
-  else {
-    pred_concs = pred_concs %>% bind_rows(pred_concs, pred_df)
-  }
-  # print(trained_model)
-  }
-  pred_concs = pred_concs %>% arrange(desc(concentration))
-  return(pred_concs)
-}
-
-second_augment = augmented_random_forest_model(dataset = augmented_18_data_2,
-                              target = "target_vector",
-                              k_folds = 5,
-                              model_type = "rf")
-
-second_augment_perc_correct_rf = percent_correct_visualization(second_augment, '#1D6363')
-
-first_augment_rf = augmented_random_forest_model(dataset = augmented_18_data_1,
-                              target = "target_vector",
-                              k_folds = 5,
-                              model_type = "rf")
-
-first_augment_perc_correct_rf = percent_correct_visualization(first_augment_rf, '#1D6363')
-
-combined_augmented_data = bind_rows(augmented_18_data_1, augmented_18_data_2)
-combined_augmented_data
-write.csv(combined_augmented_data, "combined_augmented_data.csv", row.names = F)
-combined_augment_with_batch = combined_augmented_data
-combined_augment_with_batch$batch = c(rep(1, 288), rep(2, 456))
-write.csv(combined_augment_with_batch, "combined_augment_with_batch.csv", row.names = F)
-
-combined_augment_with_batch
-
-combined_augment_rf = augmented_random_forest_model(dataset = combined_augmented_data,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "rf")
-
-combined_augment_perc_correct_rf = percent_correct_visualization(combined_augment_rf, "#1D6363")
-
-first_augment_perc_correct_rf
-second_augment_perc_correct_rf
-combined_augment_perc_correct_rf
-
-# Takeaways from testing 0.9, 1, and 2 ng/ml cutoffs:
-#   -For low concentrations (0.97 ng/mL), the combined data set outperforms both the individual datasets , but not by a huge amount
-#   -First augment generally performs the best between 3.9 and 125 but usually is the worst at the lowest and highest concentration
-
-# Still need to check for outliers
-```
-
-```{r}
-# Comparing batches with kmeans and PCA
-```
-
-
-```{r}
 all_data = augmented_random_forest_model(dataset = augmented_dab18_data,
                               target = "target_vector",
                               k_folds = 5,
@@ -400,7 +671,7 @@ og_data_only_svmRad_perc_correct = percent_correct_visualization(original_only_r
 og_data_only_svmRad_perc_correct
 ```
 
-```{r}
+```{r PERCENT CORRECT VISUALIZATION}
 # Percent correct by concentration for all data
 percent_correct_visualization = function(dataset, color){
   viz = dataset %>% mutate(across(concentration, round, 4)) %>%
