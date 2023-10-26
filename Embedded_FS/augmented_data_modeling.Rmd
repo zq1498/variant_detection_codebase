@@ -292,7 +292,7 @@ main_outliers_detection_function = function(dataset, threshold, impute = 'mean')
  
 # combined_augmented_data
 outlier_removed_df = main_outliers_detection_function(combined_augmented_data, 0.1)
-setdiff(outlier_removed_df, combined_augmented_data)
+# setdiff(outlier_removed_df, combined_augmented_data)
 ```
 
 ```{r}
@@ -300,6 +300,7 @@ setdiff(outlier_removed_df, combined_augmented_data)
 # That said, for thresh - 0.9, knn imputation seems to massively stabilize rf results (no _conc)
 na_test = main_outliers_detection_function(combined_augmented_data, 0.1, impute='na')
 na_test = na_test %>% select(-Replicate)
+
 
 knn_impute_train = na_test[complete.cases(na_test),]
 knn_impute_train
@@ -314,13 +315,15 @@ impute_rec_conc = recipe(
 )
 
 knn_conc_impute = impute_rec_conc %>% 
-  step_impute_knn(all_predictors(), neighbors=3)
+  step_impute_knn(all_predictors(), neighbors=5)
 
 knn_conc_impute_prep = prep(knn_conc_impute, training = knn_impute_train)
 
 knn_conc_imputed = bake(knn_conc_impute_prep, knn_impute_test) 
 
 knn_conc_imputed_full = bind_rows(knn_impute_train, knn_conc_imputed) %>% bind_cols("Replicate" = combined_augmented_data$Replicate)
+
+
 # Imputing without knowing conc
 knn_impute_no_conc = knn_impute_train %>% select(-Conc.)
 knn_test_no_conc = knn_impute_test %>% select(-Conc.)
@@ -331,32 +334,33 @@ impute_rec_no_conc = recipe(
 ) %>% step_rm(removals = 'Conc.')
 
 knn_no_conc_impute = impute_rec_no_conc %>% 
-  step_impute_knn(all_predictors(), neighbors=3) %>% 
+  step_impute_knn(all_predictors(), neighbors=5) %>% 
   prep(training = knn_impute_train) %>% 
   bake(knn_impute_test)
 knn_no_conc_impute
 knn_no_conc_impute_full = bind_rows(knn_impute_train, knn_no_conc_impute) %>% bind_cols("Replicate" = combined_augmented_data$Replicate)
 knn_no_conc_impute_full
 
-
+knn_impute_train
 DR_Viz(outlier_removed_df)
 DR_Viz(knn_conc_imputed_full)
 DR_Viz(knn_no_conc_impute_full)
+
 
 knn_conc_impute_rf = augmented_random_forest_model(dataset = knn_conc_imputed_full,
                               target = "target_vector",
                               k_folds = 10,
                               model_type = "rf",
                               lower_thresh = 0.9,
-                              upper_thresh = 249)
+                              upper_thresh = 251)
 knn_conc_perc_correct_rf = percent_correct_visualization(knn_conc_impute_rf, "#1D6363")
 
 knn_conc_impute_svmR = augmented_random_forest_model(dataset = knn_conc_imputed_full,
                               target = "target_vector",
                               k_folds = 10,
-                              model_type = "qda",
+                              model_type = "svmRadial",
                               lower_thresh = 0.9,
-                              upper_thresh = 249)
+                              upper_thresh = 251)
 knn_conc_perc_correct_svmR = percent_correct_visualization(knn_conc_impute_svmR, "#1D6363")
 
 
@@ -364,15 +368,18 @@ knn_conc_impute_qda = augmented_random_forest_model(dataset = knn_conc_imputed_f
                               target = "target_vector",
                               k_folds = 10,
                               model_type = "qda",
-                              lower_thresh = 0.9,
-                              upper_thresh = 249)
+                              lower_thresh = 0.4,
+                              upper_thresh = 251)
 knn_no_conc_perc_correct_qda = percent_correct_visualization(knn_conc_impute_qda, "#1D6363")
-
-knn_no_conc_perc_correct_rf
-knn_no_conc_perc_correct_svmR
+knn_conc_perc_correct_rf
+knn_conc_perc_correct_svmR
 knn_no_conc_perc_correct_qda
 
-mean(c(.93,.85,.86,.85,.89, .89, .93,.821, .77,.89))
+# knn_no_conc_perc_correct_rf
+# knn_no_conc_perc_correct_svmR
+# knn_no_conc_perc_correct_qda
+
+# mean(c(.93,.85,.86,.85,.89, .89, .93,.821, .77,.89))
 ```
 ```{r}
 # Let's try to simulate some data split into train and test set
@@ -571,7 +578,7 @@ augmented_18_data_2
 first_augment_rf = augmented_random_forest_model(dataset = augmented_18_data_1,
                               target = "target_vector",
                               k_folds = 5,
-                              model_type = "qda")
+                              model_type = "svmRadial")
 
 first_augment_perc_correct_rf = percent_correct_visualization(first_augment_rf, '#1D6363')
 first_augment_perc_correct_rf = first_augment_perc_correct_rf + labs(title='First set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml')
@@ -580,33 +587,47 @@ first_augment_perc_correct_rf = first_augment_perc_correct_rf + labs(title='Firs
 second_augment = augmented_random_forest_model(dataset = augmented_18_data_2,
                               target = "target_vector",
                               k_folds = 5,
-                              model_type = "qda")
+                              model_type = "svmRadial")
 
 second_augment_perc_correct_rf = percent_correct_visualization(second_augment, '#1D6363')
 second_augment_perc_correct_rf = second_augment_perc_correct_rf + labs(title='Second set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml')
 
 # ggsave("second_augment_perc_correct_rf_09ngml_4.png", second_augment_perc_correct_rf)
 
-combined_augment_rf = augmented_random_forest_model(dataset = combined_augmented_data,
+combined_augment_radsvm = augmented_random_forest_model(dataset = knn_conc_imputed_full,
                               target = "target_vector",
                               k_folds = 10,
-                              model_type = "rf")
+                              model_type = "svmRadial",
+                              upper_thresh = 251,
+                              lower_thresh = 0.9)
 
-combined_augment_perc_correct_rf = percent_correct_visualization(combined_augment_rf, "#1D6363")
-combined_augment_perc_correct_rf = combined_augment_perc_correct_rf + labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml')
-
+combined_augment_perc_correct_svm = percent_correct_visualization(combined_augment_radsvm, "#1D6363")
+combined_augment_perc_correct_svm = combined_augment_perc_correct_svm + labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml')
+combined_augment_perc_correct_svm
 # ggsave("combined_augment_perc_correct_rf_04ngml_3.png", combined_augment_perc_correct_rf)
 
-outlier_removed_rf = augmented_random_forest_model(dataset = outlier_removed_df,
+outlier_removed_radsvm = augmented_random_forest_model(dataset = knn_conc_imputed_full,
                               target = "target_vector",
                               k_folds = 10,
-                              model_type = "rf")
+                              model_type = "svmRadial",
+                              upper_thresh = 251,
+                              lower_thresh = 0.9)
 
-outlier_removed_perc_correct = percent_correct_visualization(outlier_removed_rf, "#1D6363")
-outlier_augment_perc_correct_rf = outlier_removed_perc_correct + labs(title='Combined set of augmented data - mean imputed outliers', subtitle = 'Conc. Threshold = 0.9 ng/ml')
+outlier_removed_rf = augmented_random_forest_model(dataset = knn_conc_imputed_full,
+                              target = "target_vector",
+                              k_folds = 10,
+                              model_type = "rf",
+                              upper_thresh = 251,
+                              lower_thresh = 0.9)
+outlier_removed_perc_correct_rf = percent_correct_visualization(outlier_removed_rf, "#1D6363")
+outlier_removed_perc_correct_rf
+
+outlier_removed_perc_correct_svm = percent_correct_visualization(outlier_removed_radsvm, "#1D6363")
+outlier_removed_perc_correct_svm
+outlier_augment_perc_correct_svm = outlier_removed_perc_correct_svm + labs(title='Combined set of augmented data - mean imputed outliers', subtitle = 'Conc. Threshold = 0.9 ng/ml')
 # ggsave("outlier_augment_perc_correct_rf_09ngml_4.png", outlier_augment_perc_correct_rf)
-
-
+combined_augment_perc_correct_rf
+outlier_augment_perc_correct_rf
 first_aug_04ngml_perc_correct = first_augment_perc_correct_rf + labs(title='First set of augmented data', subtitle = 'Conc. Threshold = 0.4 ng/ml')
 second_aug_04ngml_perc_correct = second_augment_perc_correct_rf + labs(title='Second set of augmented data', subtitle = 'Conc. Threshold = 0.4 ng/ml')
 combined_aug_04ngml_perc_correct = combined_augment_perc_correct_rf + labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.4 ng/ml')
@@ -645,7 +666,7 @@ outlier_removed_qda = augmented_random_forest_model(dataset = outlier_removed_df
                               k_folds = 10,
                               model_type = "qda",
                               upper_thresh = 251,
-                              lower_thresh = 8)
+                              lower_thresh = .4)
 
 outlier_removed_rf_high = augmented_random_forest_model(dataset = outlier_removed_df,
                               target = "target_vector",
@@ -659,7 +680,7 @@ percent_correct_visualization(outlier_removed_rf_high, '#1D6363')
 
 ```
 ```{r}
-QDA results
+# QDA results
 
 mean(0.88,
 0.7692308,
@@ -835,85 +856,127 @@ outlier_removed_perc_09ngml_correct_svm_rad = outlier_removed_perc_correct_svm_r
 ggsave("combined_augment_perc_correct_09ngml_svm_rad_2.png", combined_augment_perc_correct_04ngml_svm_rad)
 ggsave("outlier_removed_perc_09ngml_correct_svm_rad_2.png", outlier_removed_perc_04ngml_correct_svm_rad)
 ```
+```{r}
+knn_impute = function(train_data, test_data, neighbors=5){
+  outlier_na_df = main_outliers_detection_function(dataset, 0.1, impute='na')
+  outlier_na_df = outlier_na_df %>% select(-Replicate)
+  
+  
+}
+```
+
 
 ```{r Augmented data}
 # Ok so looks like random forests are doing the best here. Would it help us to generate some synthetic data?
 synth_augmented_random_forest_model = function(dataset,
                                          target,
                                          k_folds,
-                                         model_type){
+                                         model_type,
+                                         upper_thresh = 251,
+                                         lower_thresh = 0.4,
+                                         aug_ratio = 1){
   pred_concs = NULL
-  
+  # Provide this function a data frame with outlier's replaced with NA, then have it
+  # split the data, impute the outliers with kNN, then augment the data
   # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
-  dataset = dataset %>% filter(Conc. > .9) %>% select(-Replicate)
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh) %>% select(-Replicate)
+  
+  outlier_na_df = main_outliers_detection_function(dataset, 0.1, impute='na')
+  
   folds = createFolds(dataset[[target]], k = k_folds)
+  
   train_control = trainControl(method = "repeatedcv",
                                number = 5,
                                repeats = 3)
+  
   model_formula = paste(target, '~', ".", "-Conc.") %>% as.formula()
   
   for (fold in 1:k_folds){
     train = dataset[-folds[[fold]],]
     test = dataset[folds[[fold]],]
     
-    test_conc = test$Conc.
+    test_conc = test$Conc
     
-    preprocess = preProcess(train, method = c("center", "scale"))
-    train = predict(preprocess, train)
-    test = predict(preprocess, test)
+    impute_rec = recipe(
+      paste("target_vector", '~', '.') %>% as.formula(),
+      data = train
+    ) %>% step_rm(removals = 'Conc.')
     
-    x_test = test %>% select(-target)
-    y_test = test[[target]]
+    knn_imputed_test = impute_rec %>% 
+      step_impute_knn(all_predictors(), neighbors = 3) %>% 
+      prep(training=train) %>% 
+      bake(test)
+    
+    knn_imputed_train = impute_rec %>% 
+      step_impute_knn(all_predictors(), neighbors = 3) %>% 
+      prep(training=train) %>% 
+      bake(train)
+    
+    if (aug_ratio > 0){
+      knn_impute_train_synth = syn(knn_imputed_train, m=aug_ratio)
+      knn_impute_synth_aug = bind_rows(knn_imputed_train, knn_impute_train_synth$syn)
+    }
+    
+    else if (aug_ratio == 0){
+      knn_impute_synth_aug = knn_imputed_train
+    }
+    
+    preprocess = preProcess(knn_impute_synth_aug, method = c("center", "scale"))
+    proc_train = predict(preprocess, knn_impute_synth_aug)
+    proc_test = predict(preprocess, knn_imputed_test)
+    
+    proc_x_test = proc_test %>% select(-target)
+    proc_y_test = proc_test[[target]]
     
     if (model_type == 'rf'){
       trained_model = train(model_formula,
-                            data = train,
+                            data = proc_train,
                             method = 'ranger',
                             importance = 'impurity',
                             trControl = train_control,
                             tuneLength = 15)
 
-      predictions = predict(trained_model, x_test,
+      predictions = predict(trained_model, proc_x_test,
                             type = 'raw')
     }
     
     if (model_type == 'svmLinear'){
       trained_model = train(model_formula,
-                            data = train,
+                            data = proc_train,
                             method = 'svmLinear',
                             trControl = train_control,
                             tuneLength = 20)
-      predictions = predict(trained_model, x_test,
+      predictions = predict(trained_model, proc_x_test,
                             type = 'raw')
     }
     
     if (model_type == 'svmRadial'){
       trained_model = train(model_formula,
-                            data = train,
+                            data = proc_train,
                             method = 'svmRadial',
                             trControl = train_control,
                             tuneLength = 20)
-      predictions = predict(trained_model, x_test,
+      predictions = predict(trained_model, proc_x_test,
                             type = 'raw')
     }
   
     if (model_type == 'qda'){
       trained_model = train(model_formula,
-                            data = train,
+                            data = proc_train,
                             method = 'qda',
                             trControl = train_control,
                             tuneLength = 20)
-      predictions = predict(trained_model, x_test,
+      predictions = predict(trained_model, proc_x_test,
                             type = 'raw')
     }
     
   # print(varImp(trained_model))
-  accuracy = Accuracy(predictions, test[[target]])
+  accuracy = Accuracy(predictions, knn_imputed_test[[target]])
   print(accuracy)
   
   pred_df = data.frame("concentration" = test_conc,
                        "predictions" = predictions,
-                       "labels" = y_test)
+                       "labels" = proc_y_test)
   
   if (is.null(pred_concs)){
     pred_concs = pred_df
@@ -927,48 +990,96 @@ synth_augmented_random_forest_model = function(dataset,
   return(pred_concs)
 }
 
+synth_combined_augment_radSvm = synth_augmented_random_forest_model(dataset = combined_augmented_data,
+                              target = "target_vector",
+                              k_folds = 10,
+                              model_type = "svmRadial",
+                              lower_thresh=0.9,
+                              upper_thresh = 249,
+                              aug_ratio = 1)
+percent_correct_visualization(synth_combined_augment_radSvm, "#1D6363")
+
 # Test synth without Conc. as well
 test_df = outlier_removed_df %>% filter(Conc. > 0.9) %>% select(-Replicate, -Conc.)
+test_df = knn_conc_imputed_full %>% filter(Conc. > 0.4) %>% select(-Replicate, -Conc.)
 test_df
-synth_augment = syn(test_df, m=2)
+synth_augment = syn(test_df, m=1)
 synth_augment$m
 synth_augment$syn
 
 two_x_synth_augment = bind_rows(test_df, synth_augment$syn)
 two_x_synth_augment
-one_x_synth_augment
+one_x_synth_augment = bind_rows(test_df, synth_augment$syn)
 outlier_removed_data
 synth_combined_augment_rf = synth_augmented_random_forest_model(dataset = outlier_removed_df,
                               target = "target_vector",
                               k_folds = 10,
                               model_type = "rf")
 
+synth_combined_augment_radSvm = synth_augmented_random_forest_model(dataset = outlier_removed_df,
+                              target = "target_vector",
+                              k_folds = 10,
+                              model_type = "svmRadial")
+
 percent_correct_visualization(synth_combined_augment_rf, "#1D6363")
+percent_correct_visualization(synth_combined_augment_radSvm, "#1D6363")
+
 ```
 
 ```{r}
-train_test_split = sample.split()
-xg_train = train()
-pred_concs = NULL
+# train_test_split = sample.split()
+# xg_train = train()
+# pred_concs = NULL
 
 # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
-dataset = dataset %>% filter(Conc. > .4) %>% select(-Replicate)
-folds = createFolds(dataset[[target]], k = k_folds)
+dataset = knn_conc_imputed_full %>% filter(Conc. > .4) %>% select(-Replicate)
+folds = createFolds(dataset[["target_vector"]], k = 5)
 train_control = trainControl(method = "repeatedcv",
                              number = 5,
                              repeats = 3)
-model_formula = paste(target, '~', ".", "-Conc.") %>% as.formula()
-  train = dataset[-folds[[fold]],]
-  test = dataset[folds[[fold]],]
+fold=1
+xgb_params = list("objective"="multi:softprob",
+                  "eval_metric"='merror',
+                  'eta'=0.07,
+                  "sumsample"=0.9,
+                  "colsample_bytree"=0.8,
+                  "max_depth"=8)
+
+  xgmodel_formula = paste("target_vector", '~', ".", "-Conc.") %>% as.formula()
+  xgtrain = dataset[-folds[[fold]],]
+  xgtest = dataset[folds[[fold]],]
   
-  test_conc = test$Conc.
+  test_conc = xgtest$Conc.
   
-  preprocess = preProcess(train, method = c("center", "scale"))
-  train = predict(preprocess, train)
-  test = predict(preprocess, test)
+  xgpreprocess = preProcess(xgtrain, method = c("center", "scale"))
+  xgtrain = predict(xgpreprocess, xgtrain)
+  xgtest = predict(xgpreprocess, xgtest)
   
-  x_test = test %>% select(-target)
-  y_test = test[[target]]
+  xgx_train = xgtrain %>% select(-target_vector)
+  xgy_train = xgtrain[["target_vector"]]
+  xgx_train
+  xgy_train
+  xgx_test = xgtest %>% select(-target_vector)
+  xgy_test = xgtest[["target_vector"]]
+  
+  xg.train = xgb.DMatrix(data.matrix(xgx_train), label=xgy_train)
+  xg.test = xgb.DMatrix(data.matrix(xgx_test), label=xgy_test)
+  
+  fit_xgb_cv = xgb.cv(params = xgb_params, data=xg.train, nrounds=120,
+                      folds=folds, prediction = T, stratified = T,
+                      verbose=T, showsd=F, print_every_n = 10)
+  
+  
+  # xgtrained_model = train(xgmodel_formula,
+  #                           data = xgtrain,
+  #                           method = 'xgbTree',
+  #                           trControl = train_control,
+  #                           tuneLength = 15)
+  # 
+  # xgpredictions = predict(trained_model, x_test,
+  #                       type = 'raw')
+  # 
+  
 ```
 
 
