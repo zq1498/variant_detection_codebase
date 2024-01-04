@@ -1,0 +1,16 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-01-04"
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+```
+
+```{r}
+first_half = read.csv("Data_aug_4")
+second_half = read.csv("Data_aug_4_pt2")
+```
+
+
