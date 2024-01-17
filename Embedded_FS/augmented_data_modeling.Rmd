@@ -19,6 +19,7 @@ library(synthpop)# Not loaded
 library(xgboost) # Not loaded
 library(factoextra)
 library(recipes)
+source("outlier_handling_functions.R")
 ```
 
 ```{r}
@@ -29,6 +30,10 @@ augmented_18_data_2 = augmented_18_data_2 %>% rename(Conc. = concentration)
 augmented_18_data_1 = read.csv("covspot_data_aug_1_processed.csv")
 augmented_18_data_1 = augmented_18_data_1 %>% rename(Conc. = concentration)
 augmented_18_data_1$target_vector[augmented_18_data_1$target_vector=="Omi"] = "Omicron"
+
+augmented_18_data_3 = read.csv("covspot_data_aug_3_processed.csv")
+augmented_18_data_3 = augmented_18_data_3 %>% rename(Conc. = concentration)
+augmented_18_data_3$target_vector[augmented_18_data_3$target_vector=="Omi"] = "Omicron"
 
 # write.csv(augmented_18_data_1, "augmented_18_data_1.csv", row.names = F)
 
@@ -291,8 +296,8 @@ main_outliers_detection_function = function(dataset, threshold, impute = 'mean')
 
  
 # combined_augmented_data
-outlier_removed_df = main_outliers_detection_function(combined_augmented_data, 0.1)
-# setdiff(outlier_removed_df, combined_augmented_data)
+outlier_removed_aug3 = main_outliers_detection_function(augmented_18_data_3, 0.1)
+
 ```
 
 ```{r}
@@ -381,6 +386,7 @@ knn_no_conc_perc_correct_qda
 
 # mean(c(.93,.85,.86,.85,.89, .89, .93,.821, .77,.89))
 ```
+
 ```{r}
 # Let's try to simulate some data split into train and test set
 # augment training set with additional data, then train an imputation model
@@ -435,9 +441,10 @@ test_conc_impute$var_info
 ```{r Dose respons visualization}
 DR_Viz = function(dataset){
   std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
-  dataset %>% pivot_longer(cols = -c(target_vector, Conc.),
-                                                   names_to = 'pairs',
-                                                   values_to = 'fluorescence') %>% 
+  dataset %>% select(-Replicate) %>% 
+  pivot_longer(cols = -c(target_vector, Conc.),
+               names_to = 'pairs',
+               values_to = 'fluorescence') %>% 
   group_by(Conc., target_vector, pairs) %>%
   summarise(average_fluorescence = mean(fluorescence),
             se = std.err(fluorescence)) %>% 
@@ -447,9 +454,16 @@ DR_Viz = function(dataset){
   geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
   facet_wrap('pairs', scales = 'free')+
   scale_y_continuous(limits = c(0,5))+
-  scale_x_log10()
+  scale_x_log10()+
+  theme_minimal()
 }
-
+DR_Viz(augmented_18_data_3)
+aug3_drs = DR_Viz(outlier_removed_aug3)
+combined_aug_drs = DR_Viz(combined_augmented_data)
+aug3_drs
+combined_aug_drs
+ggsave("aug3_drs.png", aug3_drs)
+ggsave("combined_aug_drs.png", combined_aug_drs)
 DR_Viz(augmented_18_data_1)
 DR_Viz(augmented_18_data_2)
 DR_Viz(combined_augmented_data)
@@ -717,9 +731,6 @@ mean(0.8461538,
  0.9166667)
 ```
 
-```{r}
-na_augment_imputed = main_outliers_detection_function(combined_augmented_data, 0.1)
-```
 
 
 ```{r}
@@ -859,10 +870,14 @@ ggsave("outlier_removed_perc_09ngml_correct_svm_rad_2.png", outlier_removed_perc
 ```{r}
 knn_impute = function(train_data, test_data, neighbors=5){
   outlier_na_df = main_outliers_detection_function(dataset, 0.1, impute='na')
-  outlier_na_df = outlier_na_df %>% select(-Replicate)
+```
+
+
+```{r}
+outlier_na_df = outlier_na_df %>% select(-Replicate)
   
   
-}
+complete.cases(outlier_removed_df)
 ```
 
 
@@ -928,47 +943,53 @@ synth_augmented_random_forest_model = function(dataset,
     proc_x_test = proc_test %>% select(-target)
     proc_y_test = proc_test[[target]]
     
-    if (model_type == 'rf'){
-      trained_model = train(model_formula,
-                            data = proc_train,
-                            method = 'ranger',
-                            importance = 'impurity',
-                            trControl = train_control,
-                            tuneLength = 15)
-
-      predictions = predict(trained_model, proc_x_test,
-                            type = 'raw')
-    }
-    
-    if (model_type == 'svmLinear'){
-      trained_model = train(model_formula,
-                            data = proc_train,
-                            method = 'svmLinear',
-                            trControl = train_control,
-                            tuneLength = 20)
-      predictions = predict(trained_model, proc_x_test,
-                            type = 'raw')
-    }
-    
-    if (model_type == 'svmRadial'){
-      trained_model = train(model_formula,
-                            data = proc_train,
-                            method = 'svmRadial',
-                            trControl = train_control,
-                            tuneLength = 20)
-      predictions = predict(trained_model, proc_x_test,
-                            type = 'raw')
-    }
-  
-    if (model_type == 'qda'){
-      trained_model = train(model_formula,
-                            data = proc_train,
-                            method = 'qda',
-                            trControl = train_control,
-                            tuneLength = 20)
-      predictions = predict(trained_model, proc_x_test,
-                            type = 'raw')
-    }
+    trained_model = train(model_formula,
+                          data = proc_train,
+                          method = model_type,
+                          importance='impurity',
+                          tuneLength = 20)
+    predictions = predict(trained_model, proc_x_test, type='raw')
+    # if (model_type == 'rf'){
+    #   trained_model = train(model_formula,
+    #                         data = proc_train,
+    #                         method = 'ranger',
+    #                         importance = 'impurity',
+    #                         trControl = train_control,
+    #                         tuneLength = 15)
+    # 
+    #   predictions = predict(trained_model, proc_x_test,
+    #                         type = 'raw')
+    # }
+    # 
+    # if (model_type == 'svmLinear'){
+    #   trained_model = train(model_formula,
+    #                         data = proc_train,
+    #                         method = 'svmLinear',
+    #                         trControl = train_control,
+    #                         tuneLength = 20)
+    #   predictions = predict(trained_model, proc_x_test,
+    #                         type = 'raw')
+    # }
+    # 
+    # if (model_type == 'svmRadial'){
+    #   trained_model = train(model_formula,
+    #                         data = proc_train,
+    #                         method = 'svmRadial',
+    #                         trControl = train_control,
+    #                         tuneLength = 20)
+    #   predictions = predict(trained_model, proc_x_test,
+    #                         type = 'raw')
+    # }
+    # 
+    # if (model_type == 'qda'){
+    #   trained_model = train(model_formula,
+    #                         data = proc_train,
+    #                         method = 'qda',
+    #                         trControl = train_control,
+    #                         tuneLength = 20)
+    #   predictions = predict(trained_model, proc_x_test,
+    #                         type = 'raw')
+    # }
     
   # print(varImp(trained_model))
   accuracy = Accuracy(predictions, knn_imputed_test[[target]])
@@ -1097,7 +1118,7 @@ og_dab19_data = augmented_dab19_data[289:384,]
 ```{r original EDA}
 # Visualizing dose response of the original and augmented data
 std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
-aug_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
+combined_augmented_data %>% pivot_longer(cols = -c(target_vector, Conc.),
                                                    names_to = 'pairs',
                                                    values_to = 'fluorescence') %>%
   ggplot(aes(x=Conc., y=fluorescence, color = target_vector))+
@@ -1107,7 +1128,7 @@ aug_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
   scale_y_continuous(limits = c(0,5))+
   scale_x_log10()
 
-aug_dab18_data %>% pivot_longer(cols = -c(target_vector, Conc.),
+combined_augmented_data %>% pivot_longer(cols = -c(target_vector, Conc.),
                                                    names_to = 'pairs',
                                                    values_to = 'fluorescence') %>% 
   group_by(Conc., target_vector, pairs) %>%
