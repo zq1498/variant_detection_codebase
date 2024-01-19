@@ -5,7 +5,9 @@ date: "2023-08-09"
 ---
 
 ```{r setup, include=FALSE}
-library(tidyverse)
+library(tidymodels)
+library(embed)
+library(tidytext)
 library(caret)
 library(ranger)
 library(ggplot2)
@@ -16,8 +18,6 @@ library(MLmetrics)
 library(outliers)
 library(gdata) # Not loaded
 library(synthpop)# Not loaded
-library(xgboost) # Not loaded
-library(factoextra)
 library(recipes)
 ```
 
@@ -55,21 +55,6 @@ augmented_18_data_2 %>% filter(Conc. == 7.8125)%>% select(starts_with(c("target_
   ggplot(aes(x=target_vector, y=fluorescence))+
   geom_boxplot()+
   facet_wrap("cab")
-```
-```{r}
-graph_data = data.frame(Accuracy = c(71.9, 88.3, 99.7, 98.3, 93.4, 100, 95.6, 100, 97.5),
-                        Concentration = c(0.98, 1.95, 3.90, 7.81, 15.63, 31.25, 62.50, 125, 250))
-ggplot(graph_data, aes(x=Concentration, y=Accuracy))+
-  geom_bar(stat = 'identity',
-             fill = '#1D6363') +
-    geom_text(aes(label = Accuracy),
-              vjust  = 1.5,
-              color = 'white') +
-  theme_classic() +
-    ylab('Percent Correct') +
-    xlab('Concentration') +
-  scale_x_log10(minor_breaks = rep(1:9, 4)*(10^rep(0:3, each = 9)))
-
 ```
 
 ```{r ALL THE MOST UP TO DATE OUTLIER HANDLING FUNCTIONS}
@@ -295,143 +280,6 @@ outlier_removed_df = main_outliers_detection_function(combined_augmented_data, 0
 # setdiff(outlier_removed_df, combined_augmented_data)
 ```
 
-```{r}
-# Using KNN imputation - doesn't make a huge difference in how the DRs look
-# That said, for thresh - 0.9, knn imputation seems to massively stabilize rf results (no _conc)
-na_test = main_outliers_detection_function(combined_augmented_data, 0.1, impute='na')
-na_test = na_test %>% select(-Replicate)
-
-
-knn_impute_train = na_test[complete.cases(na_test),]
-knn_impute_train
-knn_impute_test = na_test[!complete.cases(na_test),]
-knn_impute_test
-
-
-# Imputing with concentration known
-impute_rec_conc = recipe(
-  paste("target_vector", '~', ".") %>% as.formula(),
-  data = knn_impute_train
-)
-
-knn_conc_impute = impute_rec_conc %>% 
-  step_impute_knn(all_predictors(), neighbors=5)
-
-knn_conc_impute_prep = prep(knn_conc_impute, training = knn_impute_train)
-
-knn_conc_imputed = bake(knn_conc_impute_prep, knn_impute_test) 
-
-knn_conc_imputed_full = bind_rows(knn_impute_train, knn_conc_imputed) %>% bind_cols("Replicate" = combined_augmented_data$Replicate)
-
-
-# Imputing without knowing conc
-knn_impute_no_conc = knn_impute_train %>% select(-Conc.)
-knn_test_no_conc = knn_impute_test %>% select(-Conc.)
-
-impute_rec_no_conc = recipe(
-  paste("target_vector", '~', ".") %>% as.formula(),
-  data = knn_impute_train
-) %>% step_rm(removals = 'Conc.')
-
-knn_no_conc_impute = impute_rec_no_conc %>% 
-  step_impute_knn(all_predictors(), neighbors=5) %>% 
-  prep(training = knn_impute_train) %>% 
-  bake(knn_impute_test)
-knn_no_conc_impute
-knn_no_conc_impute_full = bind_rows(knn_impute_train, knn_no_conc_impute) %>% bind_cols("Replicate" = combined_augmented_data$Replicate)
-knn_no_conc_impute_full
-
-knn_impute_train
-DR_Viz(outlier_removed_df)
-DR_Viz(knn_conc_imputed_full)
-DR_Viz(knn_no_conc_impute_full)
-
-
-knn_conc_impute_rf = augmented_random_forest_model(dataset = knn_conc_imputed_full,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "rf",
-                              lower_thresh = 0.9,
-                              upper_thresh = 251)
-knn_conc_perc_correct_rf = percent_correct_visualization(knn_conc_impute_rf, "#1D6363")
-
-knn_conc_impute_svmR = augmented_random_forest_model(dataset = knn_conc_imputed_full,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "svmRadial",
-                              lower_thresh = 0.9,
-                              upper_thresh = 251)
-knn_conc_perc_correct_svmR = percent_correct_visualization(knn_conc_impute_svmR, "#1D6363")
-
-
-knn_conc_impute_qda = augmented_random_forest_model(dataset = knn_conc_imputed_full,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "qda",
-                              lower_thresh = 0.4,
-                              upper_thresh = 251)
-knn_no_conc_perc_correct_qda = percent_correct_visualization(knn_conc_impute_qda, "#1D6363")
-knn_conc_perc_correct_rf
-knn_conc_perc_correct_svmR
-knn_no_conc_perc_correct_qda
-
-# knn_no_conc_perc_correct_rf
-# knn_no_conc_perc_correct_svmR
-# knn_no_conc_perc_correct_qda
-
-# mean(c(.93,.85,.86,.85,.89, .89, .93,.821, .77,.89))
-```
-```{r}
-# Let's try to simulate some data split into train and test set
-# augment training set with additional data, then train an imputation model
-# remove conc from test set and attempt to impute.
-
-# Split into values greater than 0.4 and less than 4, then values greater than 5
-# train an RF, radSVM, and QDA model on the low conc and high conc values
-
-simulated_data = outlier_removed_df
-split_ind = createFolds(simulated_data$target_vector, k=5)
-test_reps = sim_test$Replicate
-train_reps = sim_train$Replicate
-
-simulated_data = simulated_data %>% select(-Replicate)
-
-for(fold in 1){
-  sim_train = simulated_data[-split_ind[[fold]],]
-  sim_test = simulated_data[split_ind[[fold]],]
-  print(sim_test)
-  original_concs = sim_test$Conc.
-  sim_test$Conc. = NA %>% as.double()
-  print(sim_test)
-  # Now take training_data and train a kNN imputation model for conc.
-  conc_impute = recipe(
-    paste("`Conc.`", '~', ".") %>% as.formula(),
-    data = sim_train
-  )
-  
-  test_conc_impute = conc_impute %>% step_impute_knn(all_predictors(), neighbors = 5)
-  test_conc_impute_prep = prep(test_conc_impute, training = sim_train)
-  test_imputed_conc = bake(object=test_conc_impute_prep, new_data=sim_test)
-  print(identical(sim_test$Conc., test_imputed_conc$Conc.))
-  # test_conc_impute = conc_impute %>% 
-  #   step_impute_knn(all_predictors(), neighbors=3) %>% 
-  #   prep(training = sim_train) %>% 
-  #   bake(sim_test)
-  print(formula(test_conc_impute_prep))
-  print(test_imputed_conc)
-  # low_conc = test_imputed_conc %>% filter(Conc. < 4)
-  # high_conc = test_imputed_conc %>% filter(Conc. > 4)
-  # conc_err = RMSE(test_imputed_conc$Conc., original_concs)
-  # print(low_conc)
-  # print(high_conc)
-  # print(conc_err)
-}
-test_imputed_conc
-conc_impute$var_info
-test_conc_impute$var_info
-```
-
-
 ```{r Dose respons visualization}
 DR_Viz = function(dataset){
   std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
@@ -479,6 +327,66 @@ percent_correct_visualization = function(dataset, color){
   return(viz)
 }
 ```
+
+```{r}
+# PCA and UMAP
+pca_rec = recipe(~ ., data = combined_augmented_data) %>% 
+  update_role(Replicate, Conc., target_vector, new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_knn(all_predictors(), neighbors = 3) %>% 
+  step_pca(all_predictors())
+
+pca_prep = prep(pca_rec)
+pca_prep
+tidied_pca = tidy(pca_prep, 3)
+tidied_pca
+
+tidied_pca %>% 
+  filter(component %in% paste0("PC", 1:5)) %>% 
+  mutate(component = fct_inorder(component)) %>% 
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)
+
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:4)) %>%
+  group_by(component) %>%
+  top_n(8, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )
+
+juice(pca_prep) %>% 
+  ggplot(aes(PC1, PC3, label = target_vector))+
+  geom_point(aes(color = target_vector), alpha = 0.7, size = 2) + 
+  # geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
+  labs(color = NULL)
+```
+```{r}
+# UMAP clustering
+umap_rec <- recipe(~., data = combined_augmented_data) %>%
+  update_role(Replicate, Conc., target_vector, new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_knn(all_predictors(), neighbors = 3) %>% 
+  step_umap(all_predictors())
+
+umap_prep <- prep(umap_rec)
+
+juice(umap_prep) %>%
+  ggplot(aes(UMAP1, UMAP2, label = target_vector)) +
+  geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
+  labs(color = NULL)
+```
+
 
 
 ```{r model training}
@@ -679,117 +587,6 @@ percent_correct_visualization(outlier_removed_qda, '#1D6363')
 percent_correct_visualization(outlier_removed_rf_high, '#1D6363')
 
 ```
-```{r}
-# QDA results
-
-mean(0.88,
-0.7692308,
-0.9166667,
-0.7916667,
-0.96,
-0.76,
-0.9583333,
-0.8846154,
-0.9166667,
-0.88)
-
-sd(c(0.88,
-0.7692308,
-0.9166667,
-0.7916667,
-0.96,
-0.76,
-0.9583333,
-0.8846154,
-0.9166667,
-0.88))
-
-
-mean(0.8461538,
- 0.9230769,
- 0.9583333,
- 0.76,
- 0.88,
- 1,
- 0.9583333,
- 0.84,
- 0.8333333,
- 0.9166667)
-```
-
-```{r}
-na_augment_imputed = main_outliers_detection_function(combined_augmented_data, 0.1)
-```
-
-
-```{r}
-graph_data_2 = data.frame(
-  Data = c(
-    'Combined',
-    'Second',
-    'First',
-    'Combined',
-    'Second',
-    'First',
-    'Combined',
-    'First',
-    'Second'
-  ),
-  Model = c(
-    'RF',
-    'Radial SVM',
-    'Radial SVM',
-    'Radial SVM',
-    'RF',
-    'RF',
-    'QDA',
-    'QDA',
-    'QDA'
-  ),
-  Accuracy = c(88.5,
-               87.1,
-               86.7,
-               89.8,
-               84.9,
-               82.4,
-               83.4,
-               80.9,
-               81.4),
-  SE = c(3.80,
-         7.54,
-         5.50,
-         5.40,
-         7.24,
-         7.40,
-         6.74,
-         10.07,
-         8.09)
-)
-graph_data_2$SE = graph_data_2$SE/sqrt(10)
-variant_acc_plot = ggplot(graph_data_2, aes(x=Model, y=Accuracy, fill=Data))+
-  geom_bar(position='dodge', stat='identity')+
-  geom_errorbar(aes(x=Model, ymin=Accuracy-SE, ymax=Accuracy+SE),
-                position=position_dodge(.9),
-                width=.2,
-                size=.8)+
-  geom_text(aes(label = Accuracy),
-              vjust  = 1.5,
-              color = 'white',
-            position=position_dodge(.9))+
-  scale_fill_manual(values=c('#608F8F', '#164A4A', '#0B2525'))+
-  scale_x_discrete(expand = c(0,0))+
-  scale_y_discrete(limits=c(0,20,40,60,80,100), expand = expansion(mult=c(0,0.1)))+
-  labs(title='Variant Prediction Accuracy by Model')+
-  theme_classic()+
-  theme(axis.text.x=element_text(size=12),
-        axis.text.y=element_text(size=12),
-        title = element_text(size=16))
-variant_acc_plot
-ggsave('Average_accuracy_by_variant_plot.png', variant_acc_plot, width = 9, height = 7)
-  
-# Adding this literally just to check changes
-  
-```
 
 ```{r}
 # So it's pretty clear that the combined data offers advantages over the individual data sets, and the outlier removed df looks the best of all
@@ -823,47 +620,8 @@ outlier_removed_perc_09ngml_correct_svm = outlier_removed_perc_correct_svm + lab
 ggsave("combined_augment_perc_correct_09ngml_svm.png", combined_augment_perc_correct_09ngml_svm)
 ggsave("outlier_removed_perc_09ngml_correct_svm.png", outlier_removed_perc_09ngml_correct_svm)
 ```
-```{r}
-# Same as above but with radial svm
 
-combined_augment_svm_rad = augmented_random_forest_model(dataset = combined_augmented_data,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "svmRadial")
 
-combined_augment_perc_correct_svm_rad = percent_correct_visualization(combined_augment_svm_rad, "#1D6363")
-
-outlier_removed_svm_rad = augmented_random_forest_model(dataset = outlier_removed_df,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "svmRadial")
-
-outlier_removed_perc_correct_svm_rad = percent_correct_visualization(outlier_removed_svm_rad, "#1D6363")
-
-combined_augment_perc_correct_svm_rad
-outlier_removed_perc_correct_svm_rad
-
-combined_augment_perc_correct_04ngml_svm_rad = combined_augment_perc_correct_svm_rad +  labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-outlier_removed_perc_04ngml_correct_svm_rad = outlier_removed_perc_correct_svm_rad + labs(title='Combined set of augmented data - outliers imputed', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-combined_augment_perc_correct_04ngml_svm_rad
-outlier_removed_perc_04ngml_correct_svm_rad
-ggsave("combined_augment_perc_correct_04ngml_svm_rad.png", combined_augment_perc_correct_04ngml_svm_rad)
-ggsave("outlier_removed_perc_04ngml_correct_svm_rad.png", outlier_removed_perc_04ngml_correct_svm_rad)
-
-combined_augment_perc_correct_09ngml_svm_rad = combined_augment_perc_correct_svm_rad +  labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-outlier_removed_perc_09ngml_correct_svm_rad = outlier_removed_perc_correct_svm_rad + labs(title='Combined set of augmented data - outliers removed', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-
-ggsave("combined_augment_perc_correct_09ngml_svm_rad_2.png", combined_augment_perc_correct_04ngml_svm_rad)
-ggsave("outlier_removed_perc_09ngml_correct_svm_rad_2.png", outlier_removed_perc_04ngml_correct_svm_rad)
-```
-```{r}
-knn_impute = function(train_data, test_data, neighbors=5){
-  outlier_na_df = main_outliers_detection_function(dataset, 0.1, impute='na')
-  outlier_na_df = outlier_na_df %>% select(-Replicate)
-  
-  
-}
-```
 
 
 ```{r Augmented data}
