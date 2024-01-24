@@ -380,14 +380,13 @@ umap_rec <- recipe(~., data = combined_augmented_data) %>%
 
 umap_prep <- prep(umap_rec)
 
+# So 
 juice(umap_prep) %>%
   ggplot(aes(UMAP1, UMAP2, label = target_vector)) +
   geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
   geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
   labs(color = NULL)
 ```
-
-
 
 ```{r model training}
 # Random forest model - dAb18
@@ -485,11 +484,12 @@ augmented_18_data_2
 
 first_augment_rf = augmented_random_forest_model(dataset = augmented_18_data_1,
                               target = "target_vector",
-                              k_folds = 5,
-                              model_type = "svmRadial")
+                              k_folds = 10,
+                              model_type = "rf")
 
 first_augment_perc_correct_rf = percent_correct_visualization(first_augment_rf, '#1D6363')
 first_augment_perc_correct_rf = first_augment_perc_correct_rf + labs(title='First set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml')
+first_augment_perc_correct_rf
 # ggsave("first_augment_perc_correct_rf_09ngml_4.png", first_augment_perc_correct_rf)
 
 second_augment = augmented_random_forest_model(dataset = augmented_18_data_2,
@@ -846,11 +846,6 @@ params = list(
   # 
   
 ```
-```{r}
-data(agaricus.train, package='xgboost')
-train <- agaricus.train
-train$data
-```
 
 ```{r}
 # Load the Iris dataset
@@ -894,17 +889,6 @@ predictions <- predict(xgb_model, dtest)
 # Evaluate the model for multi-class classification
 accuracy <- mean(predictions == y_test)
 cat("Accuracy:", accuracy, "\n")
-```
-
-```{r dab19 data handling}
-augmented_dab19_data = read.csv("augmented_dab19_data.csv")
-augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vector = case_when(
-  target_vector == "Omi" ~ "Omicron",
-  .default = target_vector
-))
-augmented_dab18_data
-og_dab18_data = augmented_dab18_data[289:384,]
-og_dab19_data = augmented_dab19_data[289:384,]
 ```
 
 ```{r original EDA}
