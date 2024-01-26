@@ -1,0 +1,241 @@
+---
+title: "augmented_data_modeling_v2"
+output: html_document
+date: "2024-01-05"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(doParallel)
+source("outlier_handling_functions.R")
+```
+
+```{r}
+# Load in combined_augmented_data.csv
+combined_augmented_data = read.csv("combined_augmented_data.csv")
+combined_augmented_data = combined_augmented_data %>% select(-cAb13)
+combined_augment_with_batch = combined_augmented_data
+combined_augment_with_batch$batch = c(rep(1, 288), rep(2, 456))
+```
+
+```{r}
+# Outlier removal function shouldnt be here, it should happen to the training
+# and testing set separately I think
+outlier_removed_augment = main_outliers_detection_function(combined_augmented_data, 0.1,
+                                                           impute = 'NA')
+
+knn_impute_rec = recipe(~., data = outlier_removed_augment) %>% 
+  step_impute_knn(all_predictors(), neighbors = 3)
+knn_imputed_augment = prep(knn_impute_rec) %>% juice()
+
+write.csv(file = 'augmented_data_knn_imputed_outliers.csv', x=knn_imputed_augment, row.names = F)
+
+DR_Viz(combined_augmented_data)
+DR_Viz(knn_imputed_augment)
+```
+
+```{r}
+# Percent correct by concentration for all data
+percent_correct_visualization = function(dataset, color){
+  viz = dataset %>% mutate(across(concentration, round, 4)) %>%
+    mutate_at('concentration', as.factor) %>% mutate(match = ifelse(predictions == labels, 1, 0)) %>% 
+                          group_by(concentration) %>%
+    summarize(num_correct = sum(match),
+              total = n()) %>%
+    mutate(percent_correct = (round(num_correct / total, 4)) * 100) %>%
+    ggplot(aes(x = concentration, y = percent_correct)) +
+    geom_bar(stat = 'identity',
+             fill = color) +
+    geom_text(aes(label = percent_correct),
+              vjust  = 1.5,
+              color = 'white') +
+    theme_classic() +
+    ylab('Percent Correct') +
+    xlab('Concentration') +
+    scale_y_continuous(labels = scales::number_format(accuracy = 0.001))
+  
+  return(viz)
+}
+```
+
+```{r}
+DR_Viz = function(dataset){
+  std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
+  dataset %>% select(-Replicate) %>% 
+  pivot_longer(cols = -c(target_vector, Conc.),
+               names_to = 'pairs',
+               values_to = 'fluorescence') %>% 
+  group_by(Conc., target_vector, pairs) %>%
+  summarise(average_fluorescence = mean(fluorescence),
+            se = std.err(fluorescence)) %>% 
+  ggplot(aes(x=Conc., y=average_fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(0,5))+
+  scale_x_log10()+
+  theme_minimal()
+}
+```
+
+```{r}
+prototype_function = function(dataset,
+             prop,
+             updample = T,
+             upsample_ratio = 1){
+  initial_split = initial_split(dataset,
+                                prop=0.7,
+                                strata = 'target_vector')
+  train_data = training(initial_split)
+  test_data = testing(initial_split)
+  
+  # step_rose skip=T by default so the subsequent bake step wont actually do
+  # anything
+  upsample_recipe = recipe(target_vector~.,
+                                   data = train_data) %>% 
+    step_rose(target_vector) %>% 
+    prep()
+  
+  upsampled_train_data = upsample_recipe %>% 
+    bake(new_data = NULL)
+  
+  # If skip is left TRUE, then the following code is required
+  baked = upsample_recipe %>% 
+    bake(new_data = train_data) %>% 
+    count(class, name = "baked")
+  
+  upsampled_data = bind_rows(train_data, upsampled_train_data)
+}
+
+
+
+prototype_function
+
+# If a chi-square analysis of the resulting contingency tables doesn't end up here somehow then I'm going to hurl myself off a bridge
+```
+
+```{r}
+# Upsample testing, take a data set and upsample over four class, the remove the recipe if necessary
+# I want to plot the results of each upsampling algorithm in a lower dimensional space (UMAP?)
+umap_viz = function(dataset){
+  # umap_param_grid = grid_latin_hypercube(
+  #   n_neighbors = 
+  #   min_dist = 
+  #   n_components = 
+  #   metric = 
+  # )
+  # 
+  # umap_subplots = list()
+  dataset = dataset %>% select(-c(Replicate)) %>% mutate(across(Conc., round, 3))
+  
+  umap_rec = recipe( ~ ., data = dataset) %>% 
+    update_role(Conc., target_vector, new_role = "id") %>% 
+    step_normalize(all_predictors()) %>% 
+    step_umap(all_predictors(), 
+              num_comp = 2,
+              neighbors = 30,
+              min_dist = 0.1) %>% 
+    prep()
+  
+  umap_embedding = juice(umap_rec)
+  
+  umap_embedding_plot = umap_embedding %>% 
+    ggplot(aes(UMAP1, UMAP2, label = Conc.)) + 
+    geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
+    geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans") +
+    labs(color = NULL)
+  
+  print(umap_embedding_plot)
+  
+}
+
+umap_viz(combined_augmented_data %>% filter(Conc. > 0.1) %>% filter(Conc. < 249)) 
+
+# missing values imputed using k-nearest neighbors using the entire (unsplit)
+# data set
+umap_viz(knn_imputed_augment %>% filter(Conc. > 0.1 & Conc. < 249))
+
+
+```
+
+```{r}
+# Upsample testing, take a data set and upsample over four class, the remove the recipe if necessary
+# I want to plot the results of each upsampling algorithm in a lower dimensional space (UMAP?)
+umap_viz = function(dataset){
+  umap_param_grid = grid_latin_hypercube(
+    neighbors(),
+    min_dist()
+  )
+  
+  print(umap_param_grid)
+
+  umap_subplots = list()
+  dataset = dataset %>% select(-c(Replicate)) %>% mutate(across(Conc., round, 3))
+  
+  umap_rec = recipe( ~ ., data = dataset) %>% 
+    update_role(Conc., target_vector, new_role = "id") %>% 
+    step_normalize(all_predictors()) %>% 
+    step_umap(all_predictors(), 
+              num_comp = 2,
+              neighbors = 30,
+              min_dist = 0.1) %>% 
+    prep()
+  
+  umap_embedding = juice(umap_rec)
+  
+  umap_embedding_plot = umap_embedding %>% 
+    ggplot(aes(UMAP1, UMAP2, label = Conc.)) + 
+    geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
+    geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans") +
+    labs(color = NULL)
+  
+  print(umap_embedding_plot)
+  
+}
+
+umap_viz(combined_augmented_data %>% filter(Conc. > 0.1) %>% filter(Conc. < 249)) 
+
+# missing values imputed using k-nearest neighbors using the entire (unsplit)
+# data set
+umap_viz(knn_imputed_augment %>% filter(Conc. > 0.1 & Conc. < 249))
+
+
+```
+
+
+```{r}
+# Take two data sets, an train (preferably upsampled) and test data and performs
+# 10 fold CV
+inner_cv_loop = function(train_data,
+                         test_data,
+                         n_folds,
+                         upsample_ratio = 1,
+                         )
+```
+
+```{r}
+global_train_wrapper = function(dataset_list, 
+                                upsample_ratio,
+                                n_folds...){
+  model_eval = pmap(dataset_list, global_training_function,
+                    n_folds = 10,
+                    upsample_ratio = 1,
+                    tuneLength = 20)
+}
+```
+
+```{r}
+# Random forest
+random_forest = function(object, mtry = 1){
+  mod = rand_forest(mode = "classification", trees = 1000, mtry = mtry) %>% 
+    set_engine("ranger") %>% 
+    fit(outcome~., data = analysis(object))
+  
+  holdout_pred = predict(mod, assessment(object) %>% select(-outcome)) %>% 
+    bind_cols(assessment) %>% select(outcome)
+  
+  accuracy(holdout_pred, truth = outcome, estimate = .pred_class)$.estimate
+}
+```
+
