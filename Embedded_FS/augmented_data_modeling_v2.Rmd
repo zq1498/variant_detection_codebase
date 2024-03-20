@@ -19,6 +19,29 @@ combined_augment_with_batch$batch = c(rep(1, 288), rep(2, 456))
 ```
 
 ```{r}
+# Fluorescence normalization by dividing values by the total fluorescence sum then scaling
+fluorescence_data = combined_augmented_data %>% select(starts_with("cAb"))
+fluorescence_data$total_fluorescence = rowSums(fluorescence_data, na.rm = T)
+
+total_normalized_fluorescence_data = fluorescence_data %>% mutate(across(-"total_fluorescence"), . / total_fluorescence)
+# Remove the same rows from the combined_augmented data that we did from the total normalized data
+modded_combined_augment = combined_augmented_data[complete.cases(total_normalized_fluorescence_data)==T,]
+modded_combined_augment
+
+total_normalized_fluorescence_data = total_normalized_fluorescence_data[complete.cases(total_normalized_fluorescence_data)==T,]
+total_normalized_fluorescence_data_full = bind_cols(modded_combined_augment %>% select(-starts_with("cAb")),
+                                               total_normalized_fluorescence_data)
+
+total_normalized_fluorescence_data_full$total_fluorescence = fluorescence_data$total_fluorescence[-c(93, 164, 332, 617, 691)]
+total_normalized_fluorescence_data_full$average_fluorescence = total_normalized_fluorescence_data_full$total_fluorescence/10
+
+write_csv(x = total_normalized_fluorescence_data_full, file = "fluorescence_normalized_by_total.csv")
+
+total_normalized_fluorescence_data_full %>% ggplot(aes(x=Conc., y=total_fluorescence)) +
+  geom_point(aes(color = target_vector))
+```
+
+```{r}
 # Outlier removal function shouldnt be here, it should happen to the training
 # and testing set separately I think
 outlier_removed_augment = main_outliers_detection_function(combined_augmented_data, 0.1,
@@ -32,6 +55,7 @@ write.csv(file = 'augmented_data_knn_imputed_outliers.csv', x=knn_imputed_augmen
 
 DR_Viz(combined_augmented_data)
 DR_Viz(knn_imputed_augment)
+DR_Viz(total_normalized_fluorescence_data_full)
 ```
 
 ```{r}
@@ -131,10 +155,11 @@ umap_viz = function(dataset){
   
   umap_rec = recipe( ~ ., data = dataset) %>% 
     update_role(Conc., target_vector, new_role = "id") %>% 
+    step_zv() %>% 
     step_normalize(all_predictors()) %>% 
     step_umap(all_predictors(), 
               num_comp = 2,
-              neighbors = 30,
+              neighbors = 25,
               min_dist = 0.1) %>% 
     prep()
   
@@ -149,12 +174,16 @@ umap_viz = function(dataset){
   print(umap_embedding_plot)
   
 }
-
+umap_viz(combined_augmented_data)
 umap_viz(combined_augmented_data %>% filter(Conc. > 0.1) %>% filter(Conc. < 249)) 
-
+umap_viz(combined_augmented_data %>% filter(Conc. > 1) %>% filter(Conc. < 249)) 
+umap_viz(total_normalized_fluorescence_data_full)
+umap_viz(total_normalized_fluorescence_data_full %>% filter(Conc. > 0.1) %>% filter(Conc. < 249))
+umap_viz(total_normalized_fluorescence_data_full %>% filter(Conc. > 1) %>% filter(Conc. < 249))
 # missing values imputed using k-nearest neighbors using the entire (unsplit)
 # data set
 umap_viz(knn_imputed_augment %>% filter(Conc. > 0.1 & Conc. < 249))
+
 
 
 ```
@@ -178,8 +207,8 @@ umap_viz = function(dataset){
     step_normalize(all_predictors()) %>% 
     step_umap(all_predictors(), 
               num_comp = 2,
-              neighbors = 30,
-              min_dist = 0.1) %>% 
+              neighbors = 15,
+              min_dist = 0.01) %>% 
     prep()
   
   umap_embedding = juice(umap_rec)
@@ -198,9 +227,7 @@ umap_viz(combined_augmented_data %>% filter(Conc. > 0.1) %>% filter(Conc. < 249)
 
 # missing values imputed using k-nearest neighbors using the entire (unsplit)
 # data set
-umap_viz(knn_imputed_augment %>% filter(Conc. > 0.1 & Conc. < 249))
-
-
+umap_viz(knn_imputed_augment %>% filter(Conc. > 0.01 & Conc. < 249))
 ```
 
 

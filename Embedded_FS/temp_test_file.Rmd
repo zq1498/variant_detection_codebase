@@ -1,0 +1,127 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-03-20"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(doParallel)
+source("outlier_handling_functions.R")
+```
+
+```{r}
+combined_augmented_data = read.csv("combined_augmented_data.csv")
+combined_augmented_data = combined_augmented_data %>% select(-cAb13)
+# Retain variant value, replace replicate value with a rowname column to identify
+# each sample. Color the final heatmap by the variant value and store prediction history
+# alongisde rowname
+labled_augmented_data = combined_augmented_data %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.)
+```
+
+```{r}
+# Two best performing algorithms are RFs and RBF-SVM, we'll also test Xgboost here
+# and compile the results to see which is best. Last we'll test an MLP architecture but 
+# that'll be over in pytorch
+
+# Question: do we
+generic_preproc = recipe(variant~., data = train) %>% 
+  update_role()
+  step_BoxCox() %>% 
+  step_normalize(all_predictor())
+  
+base_tree_wf = workflow() %>% 
+  add_model() %>% 
+  add_formula(variant~.)
+```
+
+```{r}
+augmented_modeling_function = function(dataset,
+                                       target,
+                                       k_folds,
+                                       model_type,
+                                       lower_thresh = 0,
+                                       upper_thresh = 251){
+  
+  pred_concs = NULL
+  
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
+  
+  gen_rec = recipe(target_vector~., data = dataset) %>% 
+    update_role(SampleNum, Conc., new_role = 'id') %>% 
+    # step_BoxCox(all_predictors()) %>% 
+    step_normalize(all_predictors())
+
+  folds = vfold_cv(dataset, v=10, repeats = 2, strata = target_vector)
+  
+  if (model_type == 'rbf_svm'){
+    mod = svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+    set_mode('classification') %>% 
+    set_engine('kernlab')
+  }
+  
+  if (model_type == 'rf'){
+    mod = rand_forest(trees = 5000, mtry = tune(), min_n = tune()) %>% 
+      set_mode('classification') %>% 
+      set_engine('ranger')
+  }
+  
+  resample_results = mod %>% 
+    tune_grid(
+      gen_rec,
+      resamples = folds,
+      control = control_grid(save_pred = TRUE)
+    )
+  
+  metrics = collect_metrics(resample_results)
+  print(metrics)
+  return(resample_results)
+}
+
+model_results = augmented_modeling_function(labled_augmented_data,
+                            'target_vector',
+                            k_folds = 5,
+                            model_type = 'rf',
+                            lower_thresh = 0.9)
+
+collect_predictions(model_results)
+show_best(model_results)
+show_best(model_results, metric = "accuracy")
+
+unique(collect_predictions(model_results)$.pred_class)
+# This is super weird, the class probabilities don't seem to be related to the predicted class,
+# meaning that the class with the max probability does not correspond to the predicted class provided.
+# If I just take the max probability value and assign class based on that, do we get a different accuracy value?
+# RBF_SVM
+best_params = show_best(model_results)
+best_cost = best_params$cost[[1]]
+best_sigma = best_params$rbf_sigma[[1]]
+
+best_param_preds = collect_predictions(model_results) %>% 
+  filter(cost == best_cost & rbf_sigma == best_sigma)
+
+# RANDOM FOREST
+best_mtry = best_params$mtry[[1]]
+best_min_n = best_params$min_n[[1]]
+
+best_param_preds = collect_predictions(model_results) %>% 
+  filter(mtry == best_mtry & min_n == best_min_n)
+
+# SAME FOR ALL
+best_param_probs = data.frame('Beta' = best_param_preds$.pred_Beta,
+                              'Delta' = best_param_preds$.pred_Delta,
+                              'Omicron' = best_param_preds$.pred_Omicron,
+                              'WT' = best_param_preds$.pred_WT)
+best_param_probs$max_prob = apply(best_param_probs, 1, function(x) paste0(names(best_param_probs)[x==max(x)]))
+best_param_probs$true_class = best_param_preds$target_vector
+best_param_probs
+
+sum(best_param_probs$max_prob == best_param_preds$target_vector)/nrow(best_param_probs)
+
+# Now I could see what the average difference is in probability between the max probability value and the second highest value. Ideally, i would see this 
+```
+```{r}
+# Augmented modeling function with bayesian optimization + Xgboost results
+```
+
