@@ -1,0 +1,112 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-03-25"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggbeeswarm)
+```
+
+```{r}
+clinical_data = read.csv("full_covspot_clinical_data_no_duplicates.csv")
+# Threshold clinical data by N (1B2) cutoff value from paper- 2.7 AU
+clinical_data = clinical_data %>% filter(X1B2 > 2.72)
+augmented_data = read.csv("C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase/Embedded_FS/combined_augmented_data.csv")
+augmented_data
+#
+test_vec = augmented_data %>% filter(cAb10>2.5) %>% select(target_vector)
+CrossTable(rep('WT', nrow(test_vec)), test_vec %>% unlist())
+
+thresholded_augmented_data = augmented_data %>% filter(Conc. > 10) %>% select(c(target_vector, cAb20, cAb25, cAb26))
+augmented_data %>% filter(Conc. > 10) %>% select(c(target_vector, Conc., cAb20, cAb25, cAb26)) %>% filter(target_vector == "Omicron")
+```
+
+```{r}
+long_clinical_data = clinical_data %>% pivot_longer(cols = c(!Variant),
+                                                    names_to = "cAb",
+                                                    values_to = "Fluorescence")
+long_clinical_data
+ggplot(long_clinical_data, aes(x=Variant, y = Fluorescence)) + 
+  geom_violin() + 
+  facet_wrap(facets = "cAb", scales = 'free')
+
+# AM130 - cAb20, MM43 - cAb25, MM48 - cAb26
+total_spike_fluorescence = clinical_data %>% select(-c(Variant, X1B2)) %>% rowSums() # sum(clinical_data$AM130, clinical_data$MM43, clinical_data$MM48)
+clinical_spike_fluorescence = data.frame(Variant = clinical_data$Variant,
+                                total_fluorescence = total_spike_fluorescence,
+                                source = 'clinical')
+augmented_spike_fluorescence = data.frame(Variant = thresholded_augmented_data$target_vector,
+                                          total_fluorescence = rowSums(thresholded_augmented_data %>% select(-target_vector)),
+                                          source = 'recombinant')
+
+combined_total_spike_df = rbind(clinical_spike_fluorescence, augmented_spike_fluorescence)
+combined_total_spike_df
+```
+
+```{r}
+ggplot(combined_total_spike_df, aes(x=source, y=total_fluorescence))+
+  geom_violin()+
+  facet_wrap(facets = 'Variant', scales = 'free')
+```
+```{r}
+# Summed fluorescence is confusing as it seems to indicate that the spike concentrations
+# in clinical samples are brighter than the VAST majority of recombinant samples.
+# This is surprising since you'd expect clinical samples (especially these since they're like 10x diluted nasal swabs in lysis buffer)
+# to have a significantly lower fluorescence
+# Maybe it'll help to separate them by individual cabs?
+# NOTE: data is still thresholded by 1B2 > 2.72
+threshold = .1
+augment_data_subset = augmented_data %>% 
+  mutate(Greater_than_threshold = ifelse(Conc. > threshold, "AboveThreshold", "BelowThreshold")) %>% 
+  select(c(Variant = target_vector, AM130 = cAb20, MM43 = cAb25, MM48 = cAb26, Greater_than_threshold)) %>% 
+  mutate(source = 'recombinant') %>% 
+  filter(Variant !=  'Beta')
+augment_data_subset
+
+clinical_data_subset = clinical_data %>% select(-X1B2) %>% mutate(source = 'clinical',
+                                                                  Greater_than_threshold = 'clinical')  
+clinical_data$X1B2
+clinical_plus_recombinant = rbind(augment_data_subset %>% mutate(across(is.numeric, scale)),
+                                  clinical_data_subset %>% mutate(across(is.numeric, scale)))
+variant_split_clinical_plus_recombinant = split(clinical_plus_recombinant, clinical_plus_recombinant$Variant)
+variant_split_clinical_plus_recombinant
+
+vio_plot = function(df){
+  long_df = df %>% pivot_longer(cols=-c(Variant, source),
+                                names_to = "cAb",
+                                values_to = "Fluorescence")
+  p = ggplot(long_df, aes(x=source, y = Fluorescence))+
+    geom_violin()+
+    facet_wrap(facets = "cAb", scales = 'free')
+}
+
+map(variant_split_clinical_plus_recombinant, vio_plot)
+
+beeswarm_plot = function(df){
+  long_df = df %>% pivot_longer(cols=-c(Variant, source, Greater_than_threshold),
+                                names_to = "cAb",
+                                values_to = "Fluorescence")
+  p = ggplot(long_df, aes(x=source, y = Fluorescence))+
+    geom_beeswarm(aes(color = Greater_than_threshold))+
+    facet_wrap(facets = "cAb", scales = 'free')
+}
+
+map(variant_split_clinical_plus_recombinant, beeswarm_plot)
+
+beeswarm_plot2 = function(df){
+  long_df = df %>% pivot_longer(cols=-c(Variant, source, Greater_than_threshold),
+                                names_to = "cAb",
+                                values_to = "Fluorescence")
+  p = ggplot(long_df, aes(x=Variant, y = Fluorescence))+
+    geom_beeswarm(aes(color = Greater_than_threshold))+
+    facet_wrap(facets = "cAb", scales = 'free')
+}
+
+print(beeswarm_plot2(clinical_plus_recombinant))
+```
+```{r}
+# 
+```
+
