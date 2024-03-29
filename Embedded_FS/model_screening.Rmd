@@ -1,0 +1,290 @@
+---
+title: "model_screening"
+output: html_document
+date: "2024-03-29"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(doParallel)
+library(outliers) # grubbs.test
+library(stringr) # string processing
+library(isotree) # Outlier detection via isolation forest
+library(gmodels) # CrossTable()
+
+# tidymodels helper package
+library(embed)
+library(kknn)
+library(discrim)
+library(baguette)
+library(rules)
+library(earth)
+
+tidymodels_prefer()
+```
+
+```{r}
+combined_augmented_data = read.csv("combined_augmented_data.csv")
+combined_augmented_data = combined_augmented_data %>% select(-cAb13)
+# Retain variant value, replace replicate value with a rowname column to identify
+# each sample. Color the final heatmap by the variant value and store prediction history
+# alongisde rowname
+fluorescence_sums = rowSums(combined_augmented_data %>% select(starts_with('cAb')))
+avg_fluorescence = rowMeans(combined_augmented_data %>% select(starts_with('cAb')))
+
+labeled_augmented_data = combined_augmented_data %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.) %>% 
+  filter(Conc. > 0.1)
+```
+
+```{r}
+# Model specifications and recipe generation
+set.seed(0703)
+
+initial_split = initial_split(labeled_augmented_data, strata = target_vector)
+train_data = training(initial_split)
+test_data = testing(initial_split)
+training_folds = vfold_cv(train_data, strata = target_vector, repeats = 2)
+
+# Distributions of concentration in the training and test set aren't crazy different...I suppose
+train_data %>% mutate(across(Conc., as.factor)) %>% count(Conc.) %>% mutate(perc = n/nrow(train_data)*100)
+test_data %>% mutate(across(Conc., as.factor)) %>% count(Conc.) %>% mutate(perc = n/nrow(test_data)*100)
+
+train_data %>% ggplot(aes(x=Conc.)) + geom_density() + scale_x_log10()
+test_data %>% ggplot(aes(x=Conc.)) + geom_density() + scale_x_log10()
+```
+```{r}
+# Let's set up two basic recipes, one where we normalize out predictors and another where we create polynomial expansions
+normalized_rec = recipe(target_vector~., data = train_data) %>% 
+  update_role(SampleNum, Conc., new_role = 'id') %>% 
+  step_normalize(all_predictors())
+
+# NOTE: BOTH RECIPES NORMALIZE PREDICTORS CURRENTLY
+poly_recipe = normalized_rec %>% 
+  step_poly(all_predictors()) %>% 
+  step_interact(~all_predictors():all_predictors())
+
+no_pre_proc_rec = recipe(target_vector~., data = train_data) %>% 
+  update_role(SampleNum, Conc., new_role = 'id')
+```
+
+```{r}
+log_reg_spec = multinom_reg(penalty = tune(), mixture = tune()) %>% 
+  set_engine("glmnet") %>% 
+  set_mode('classification')
+
+nnet_spec = mlp(hidden_units = tune(), penalty = tune(), epoch = tune()) %>% 
+  set_engine('nnet', MaxNWts = 2600) %>% 
+  set_mode('classification')
+
+mars_spec = mars(num_terms = tune(), prod_degree = tune(), prune_method = 'backward') %>% 
+  set_engine('earth') %>% 
+  set_mode('classification')
+
+svm_r_spec = svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+  set_engine('kernlab') %>% 
+  set_mode('classification')
+
+svm_p_spec = svm_poly(cost = tune(), degree = tune()) %>% 
+  set_engine("kernlab") %>% 
+  set_mode("classification")
+
+# QDA with no regularization
+qda_spec = discrim_quad() %>% 
+  set_engine('MASS') %>% 
+  set_mode('classification')
+
+knn_spec = nearest_neighbor(neighbors = tune(), dist_power = tune(), weight_func = tune()) %>% 
+  set_engine('kknn') %>% 
+  set_mode('classification')
+
+bag_cart_spec = bag_tree() %>% 
+  set_engine('rpart', times = 50L) %>% 
+  set_mode('classification')
+
+rf_spec = rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_engine('ranger') %>% 
+  set_mode('classification')
+
+xgb_spec = boost_tree(tree_depth = tune(), learn_rate = tune(), loss_reduction = tune(), 
+              min_n = tune(), sample_size = tune(), trees = tune()) %>% 
+  set_engine('xgboost') %>% 
+  set_mode('classification')
+
+# Update some parameters
+nnet_param = 
+  nnet_spec %>% 
+  extract_parameter_set_dials() %>% 
+  update(hidden_units = hidden_units(c(1, 27)))
+
+rf_params = rf_spec %>% 
+  extract_parameter_set_dials() %>% 
+  update(mtry = mtry(c(1, 10)))
+```
+
+```{r}
+# Now we can generate a set of workflows
+normalized_wfs = workflow_set(
+  preproc = list(normalized = normalized_rec),
+  models = list(SVM_radial = svm_r_spec, SVM_poly = svm_p_spec, 
+                    KNN = knn_spec, neural_network = nnet_spec,
+                    QDA = qda_spec)
+)
+
+# To change the parameters of a certain workflow within the set, we can use option_add
+# The results column is a placeholder which will contain the tuning/resampling results from the given workflow
+normalized_wfs = normalized_wfs %>% option_add(param_info = nnet_param, id = 'normalized_neural_network')
+normalized_wfs
+```
+```{r}
+no_preproc_wfs = workflow_set(
+  preproc = list(simple = no_pre_proc_rec),
+  models = list(MARS = mars_spec, CART_bagged = bag_cart_spec,
+                    RF = rf_spec, boosting = xgb_spec)
+)
+
+no_preproc_wfs = no_preproc_wfs %>% option_add(param_info = rf_params, id = 'simple_RF')
+```
+
+```{r}
+poly_features_wfs = workflow_set(
+  preproc = list(full_quad = poly_recipe),
+  models = list(log_reg = log_reg_spec, KNN = knn_spec)
+)
+```
+
+```{r}
+all_workflows = 
+  bind_rows(no_preproc_wfs, normalized_wfs, poly_features_wfs) %>% 
+  mutate(wflow_id = gsub("(simple_)|(normalized_)", "", wflow_id))
+
+all_workflows
+```
+```{r}
+grid_ctrl = control_grid(
+  save_pred = TRUE,
+  parallel_over = "everything",
+  save_workflow = TRUE
+)
+
+grid_results = all_workflows %>% 
+  workflow_map(
+    seed = 0703,
+    resamples = training_folds,
+    grid = 25,
+    control = grid_ctrl
+  )
+for (val in 1:11){
+  print(grid_results[val,]$result)
+}
+grid_results = grid_results %>% filter(wflow_id != 'MARS')
+# Obtain models that had a functioning resampling loop
+# grid_results_functional = grid_results %>% filter(wflow_id != 'KNN', wflow_id != 'full_quad_KNN', wflow_id != 'MARS', wflow_id != 'Cubist', wflow_id != 'full_quad_log_reg')
+
+grid_results %>% rank_results()
+```
+
+```{r}
+autoplot(grid_results,
+         rank_metric = 'roc_auc',
+         metric = 'roc_auc',
+         select_best = TRUE # Returns one point per workflow
+         ) + 
+  geom_text(aes(y = mean - 0.05, label = wflow_id), angle = 90, hjust = 1) +
+  geom_text(aes(y = mean + 0.05, label = round(mean, 3))) +
+  lims(y=c(0, 1)) +
+  theme(legend.position = 'none')
+
+autoplot(grid_results,
+         rank_metric = 'accuracy',
+         metric = 'accuracy',
+         select_best = TRUE # Returns one point per workflow
+         ) + 
+  geom_text(aes(y = mean - 0.05, label = wflow_id), angle = 90, hjust = 1) +
+  geom_text(aes(y = mean + 0.05, label = round(mean, 3))) +
+  lims(y=c(0, 1)) +
+  theme(legend.position = 'none')
+
+
+autoplot(grid_results,
+         id  = 'neural_network',
+         metric = 'roc_auc')
+```
+```{r}
+# Testing final model performance for optimal models
+best_nn_results = grid_results %>% 
+  extract_workflow_set_result("neural_network") %>% 
+  select_best(metric = "roc_auc")
+
+nn_test_results <- 
+   grid_results %>% 
+   extract_workflow("neural_network") %>% 
+   finalize_workflow(best_nn_results) %>% 
+   last_fit(split = initial_split)
+
+collect_metrics(nn_test_results)
+
+
+best_rf_results = grid_results %>% 
+  extract_workflow_set_result("RF") %>% 
+  select_best(metric = 'roc_auc')
+
+rf_test_results <- 
+   grid_results %>% 
+   extract_workflow("RF") %>% 
+   finalize_workflow(best_rf_results) %>% 
+   last_fit(split = initial_split)
+
+collect_metrics(rf_test_results)
+collect_predictions(rf_test_results)
+
+best_xgb_results = grid_results %>% 
+  extract_workflow_set_result("boosting") %>% 
+  select_best(metric = 'roc_auc')
+
+xgb_test_results <- 
+   grid_results %>% 
+   extract_workflow("boosting") %>% 
+   finalize_workflow(best_xgb_results) %>% 
+   last_fit(split = initial_split)
+
+collect_metrics(xgb_test_results)
+
+
+best_qda_results = grid_results %>% 
+  extract_workflow_set_result("QDA") %>% 
+  select_best(metric = 'roc_auc')
+
+qda_test_results <- 
+   grid_results %>% 
+   extract_workflow("QDA") %>% 
+   finalize_workflow(best_qda_results) %>% 
+   last_fit(split = initial_split)
+
+collect_metrics(qda_test_results)
+
+
+best_svm_poly_results = grid_results %>% 
+  extract_workflow_set_result("SVM_poly") %>% 
+  select_best(metric = 'roc_auc')
+
+svm_poly_test_results <- 
+   grid_results %>% 
+   extract_workflow("SVM_poly") %>% 
+   finalize_workflow(best_svm_poly_results) %>% 
+   last_fit(split = initial_split)
+
+collect_metrics(svm_poly_test_results)
+
+# So every model takes about a 7-10% hit in accuracy, and a slightly smaller hit to roc_auc for the testing set
+rf_test_preds = collect_predictions(rf_test_results)
+rf_best_preds = collect_best_predictions(rf_test_results)
+test_label = labeled_augmented_data[rf_test_preds$.row,]
+test_label
+rf_conf = analyze_confidence(rf_best_preds$best_param_probs,
+                   labeled_augmented_data$Conc.,
+                   rf_test_preds$.row,)
+
+rf_conf
+```
+

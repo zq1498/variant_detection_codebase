@@ -8,6 +8,10 @@ date: "2024-03-20"
 library(tidymodels)
 library(doParallel)
 library(outliers)
+library(stringr)
+library(isotree)
+library(gmodels)
+library(embed)
 # source("outlier_handling_functions.R")
 ```
 
@@ -21,9 +25,11 @@ fluorescence_sums = rowSums(combined_augmented_data %>% select(starts_with('cAb'
 avg_fluorescence = rowMeans(combined_augmented_data %>% select(starts_with('cAb')))
 
 labled_augmented_data = combined_augmented_data %>% select(-Replicate) %>% 
-  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.) %>% 
-  mutate(sum_fluorescence = fluorescence_sums)
-labled_augmented_data
+  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.) # %>% 
+  # mutate(sum_fluorescence = fluorescence_sums)
+
+batch_labeled_augmented_data = labled_augmented_data
+batch_labeled_augmented_data$batch = factor(c(rep(1, 288), rep(2, 456)))
 ```
 
 
@@ -38,20 +44,28 @@ augmented_modeling_function = function(dataset,
   dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
   concentrations = dataset$Conc.
   
-  gen_rec = recipe(target_vector~., data = dataset) %>% 
-    update_role(SampleNum, Conc., new_role = 'id') %>% 
+   gen_rec = recipe(target_vector~., data = dataset) %>%
+      update_role(SampleNum, Conc., new_role = 'id') # %>%
+      # step_umap(neighbors = 30, keep_original_cols = FALSE)
+   
+  # gen_rec = recipe(target_vector~., data = dataset) %>% 
+    # update_role(SampleNum, Conc., new_role = 'id') # %>% 
     # step_umap(neighbors = 30, keep_original_cols = T)
     # step_BoxCox(all_predictors()) %>% 
-    step_normalize(all_predictors())
+    # step_normalize(Conc.)
 
-  folds = vfold_cv(dataset, v=10, repeats = 2, strata = target_vector)
+  folds = vfold_cv(dataset, v=k_folds, repeats = 2, strata = target_vector)
   
   if (model_type == 'rbf_svm'){
     mod = svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
     set_mode('classification') %>% 
     set_engine('kernlab')
     
-    # params = extract_parameter_dials(mod)
+    gen_rec = gen_rec %>% step_normalize(all_predictors())
+    
+    params = extract_parameter_set_dials(mod)
+    param_grid = grid_latin_hypercube(params,
+                                      size = 30)
   }
   
   if (model_type == 'rf'){
@@ -59,33 +73,31 @@ augmented_modeling_function = function(dataset,
       set_mode('classification') %>% 
       set_engine('ranger')
     
-    print(mod %>% extract_parameter_set_dials())
-    # params = parameters(
-    #   min_n(),
-    #   finalize(mtry(), select(dataset, -target_vector))
-    # )
+    params = extract_parameter_set_dials(mod) %>% finalize(x = dataset %>% select(-c(target_vector, SampleNum, Conc.)))
+    param_grid = grid_latin_hypercube(params,
+                                      size = 20)
   }
   
-  resample_results = mod %>% 
+  resample_results = mod %>%
       tune_grid(
         gen_rec,
         resamples = folds,
-        # grid = params,
+        grid = param_grid,
         control = control_grid(save_pred = TRUE)
       )
   
   metrics = collect_metrics(resample_results)
-  print(metrics)
+
   return(list("resample_results" = resample_results,
               "concentrations" = concentrations))
 }
 
-
+labled_augmented_data
 rf_model_results = augmented_modeling_function(labled_augmented_data,
                             target = "target_vector",
-                            k_folds = 10,
+                            k_folds = 5,
                             model_type = 'rf',
-                            lower_thresh = 0.9,
+                            lower_thresh = 0.1,
                             upper_thresh = 251)
 
 collect_predictions(rf_model_results$resample_results)
@@ -95,17 +107,48 @@ rf_cv_results = collect_best_predictions(rf_model_results$resample_results)
 rf_conf_analysis = analyze_confidence(rf_cv_results$best_param_probs,
                                       concentration_values = rf_model_results$concentrations,
                                       prediction_row = rf_cv_results$best_param_preds_rows)
-rf_conf_analysis %>% filter(concentration > 10) %>% count(correct)
+rf_conf_analysis
+rf_conf_analysis %>% filter(concentration > .9) %>% count(correct)
+
+
 svm_model_results = augmented_modeling_function(labled_augmented_data,
                             'target_vector',
-                            k_folds = 10,
+                            k_folds = 5,
                             model_type = 'rbf_svm',
                             lower_thresh = 0.1,
                             upper_thresh = 251)
 
 svm_cv_results = collect_best_predictions(svm_model_results$resample_results)
 
+svm_cv_results
+
+analyze_confidence(svm_cv_results$best_param_probs,
+                   concentration_values = svm_model_results$concentrations,
+                   prediction_row = svm_cv_results$best_param_preds_rows)
+
 ```
+```{r}
+# RF prediction with batch information
+rf_model_results = augmented_modeling_function(batch_labeled_augmented_data,
+                            target = "target_vector",
+                            k_folds = 5,
+                            model_type = 'rf',
+                            lower_thresh = 0.1,
+                            upper_thresh = 251)
+
+rf_batch_model_results = rf_model_results
+
+collect_predictions(rf_batch_model_results$resample_results)
+
+rf_batch_cv_results = collect_best_predictions(rf_batch_model_results$resample_results)
+
+rf_batch_conf_analysis = analyze_confidence(rf_batch_cv_results$best_param_probs,
+                                      concentration_values = rf_batch_model_results$concentrations,
+                                      prediction_row = rf_batch_cv_results$best_param_preds_rows)
+rf_batch_model_results$resample_results
+rf_batch_model_results$resample_results %>% show_best()
+```
+
 
 ```{r}
 collect_best_predictions = function(model_results){
@@ -155,6 +198,38 @@ collect_best_predictions = function(model_results){
               "incorrect_preds" = incorrect_preds,
               "best_param_preds_rows" = best_param_preds_rows))
 }
+
+analyze_confidence = function(probability_df,
+                              concentration_values,
+                              prediction_row,
+                              high_conf_thresh=0.5,
+                              low_conf_thresh=0.5){
+  probability_df$concentration = concentration_values[prediction_row]
+  max_diff_mean = mean(probability_df$max_diff)
+  max_diff_sd = sd(probability_df$max_diff)
+  
+  probability_df = probability_df %>% mutate(
+  confidence = case_when(
+    max_diff > max_diff_mean + high_conf_thresh * max_diff_sd ~ "High",
+    max_diff < max_diff_mean - low_conf_thresh * max_diff_sd ~ "Low",
+    .default = 'Medium'
+    )
+  )
+  probability_df$rowNum = prediction_row
+  
+  print(probability_df %>% group_by(confidence) %>% count(correct))
+
+  print(probability_df %>% group_by(confidence) %>% summarize(mean_conc = mean(concentration),
+                                                        sd_conc = sd(concentration)))
+  p = ggplot(probability_df, aes(x=concentration))+
+    geom_histogram()+
+    scale_x_log10()+
+    facet_wrap(facets = 'confidence')
+  
+  print(p)
+  
+  return(probability_df)
+}
 ```
 
 ```{r}
@@ -168,11 +243,16 @@ augmented_xgb_modeling_function = function(dataset,
   dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
   concentrations = dataset$Conc.
   
-  gen_rec = recipe(target_vector~., data = dataset) %>% 
-    update_role(SampleNum, Conc., new_role = 'id')  %>% 
-    step_YeoJohnson(all_predictors()) %>% 
+  gen_rec = recipe(target_vector~., data = dataset) %>%
+    update_role(SampleNum, Conc., new_role = 'id') %>%
+    # step_YeoJohnson(all_predictors()) %>% 
     # step_BoxCox(all_predictors()) %>% 
-    step_normalize(all_predictors())
+    # step_normalize(all_predictors())
+  
+  # gen_rec = recipe(target_vector~., data = dataset) %>% 
+  #   update_role(SampleNum, new_role = 'id') %>% 
+  #   # update_role(SampleNum, Conc., new_role = 'id') %>% 
+  #   step_normalize(Conc.)
 
   folds = vfold_cv(dataset, v=5, repeats = 2, strata = target_vector)
   
@@ -214,7 +294,7 @@ augmented_xgb_modeling_function = function(dataset,
   return(list("resample_results" = xgb_resample,
               "concentrations" = concentrations))
 }
-augmented_data %>% filter(Conc. > 0.1)
+
 xgb_model_results = augmented_xgb_modeling_function(labled_augmented_data,
                             'target_vector',
                             k_folds = 5,
@@ -226,42 +306,11 @@ xgb_cv_results
 best_xgb_param_probs = xgb_cv_results$best_param_probs
 best_xgb_param_probs
 
-analyze_confidence = function(probability_df,
-                              concentration_values,
-                              prediction_row,
-                              high_conf_thresh=0.5,
-                              low_conf_thresh=0.5){
-  probability_df$concentration = concentration_values[prediction_row]
-  max_diff_mean = mean(probability_df$max_diff)
-  max_diff_sd = sd(probability_df$max_diff)
-  
-  probability_df = probability_df %>% mutate(
-  confidence = case_when(
-    max_diff > max_diff_mean + high_conf_thresh * max_diff_sd ~ "High",
-    max_diff < max_diff_mean - low_conf_thresh * max_diff_sd ~ "Low",
-    .default = 'Medium'
-    )
-  )
-  probability_df$rowNum = prediction_row
-  
-  print(probability_df %>% group_by(confidence) %>% count(correct))
-
-  print(probability_df %>% group_by(confidence) %>% summarize(mean_conc = mean(concentration),
-                                                        sd_conc = sd(concentration)))
-  p = ggplot(probability_df, aes(x=concentration))+
-    geom_histogram()+
-    scale_x_log10()+
-    facet_wrap(facets = 'confidence')
-  
-  print(p)
-  
-  return(probability_df)
-}
 
 xgb_conf_analysis = analyze_confidence(probability_df = best_xgb_param_probs,
                       concentration_values = xgb_model_results$concentrations,
                       prediction_row = xgb_cv_results$best_param_preds_rows)
-xgb_conf_analysis %>% filter(concentration > 10) %>% count(correct)
+xgb_conf_analysis %>% filter(concentration > .9) %>% count(correct)
 
 xgb_cv_results$best_param_probs
 
@@ -436,15 +485,197 @@ two_step_conf_model = function(){
 ```
 
 ```{r}
-test_vec = augmented_data %>% filter(target_vector == 'Beta', Conc. == 250) %>% select(cAb10) %>% unlist()
-test_vec
-test_grubbs = grubbs.test(test_vec, type = 10)
-test_grubbs
-identify_outliers = function(vec){
+# This is a sort of poor method for identifying outliers anyway, since it can't really
+# be applied to new data based on parameters estimated on training data
+# i.e., since I don't know the concentration of a test observation, I can't compare it 
+# to the same distribution as I'm comparing these to, so I'd never be able to predict 
+test_func = function(vec,
+                     sample_num){
+  # vec = unlist(vec)
+  grubbs = grubbs.test(vec, type = 10)
+  outlier_position = str_split_i(string = test_grubbs$alternative, pattern = " +", i = 1)
+  max_val = max(vec)
+  min_val = min(vec)
   
+  if (grubbs$p.value < 0.10){
+    print(paste0(outlier_position, " outlier detected"))
+    
+    if (outlier_position == 'higher'){
+      vec[[vec==max_val]] = 'NA'
+    }
+    
+    if (outlier_position == 'lower'){
+      vec[[vec==min_val]] = 'NA'
+    }
+    print(vec)
+  }
+  
+  return(data.frame("fluorescence" = vec,
+                    'sample_num' = sample_num))
 }
 
-# Should return an array with an outlier replaceed with NA 
+combined_augmented_data %>% 
+  mutate("sample_num" = row.names(combined_augmented_data)) %>% 
+  select(-Replicate) %>% 
+  pivot_longer(cols = -c(target_vector, Conc., sample_num),
+               names_to = 'cAb',
+               values_to = 'fluorescence') %>% 
+  group_by(target_vector, Conc., cAb) %>% 
+  group_modify(~test_func(.x$fluorescence, .x$sample_num)) %>% 
+  pivot_wider(names_from = 'cAb',
+              values_from = 'fluorescence')
+
+test_group = combined_augmented_data %>% 
+  mutate("sample_num" = row.names(combined_augmented_data)) %>% 
+  select(-Replicate) %>% 
+  pivot_longer(cols = -c(target_vector, Conc., sample_num),
+               names_to = 'cAb',
+               values_to = 'fluorescence') %>% 
+  group_by(target_vector, Conc., cAb) %>% 
+  group_modify(~test_func(.x$fluorescence, .x$sample_num)) %>% 
+  ungroup() # %>% 
+  # pivot_wider(names_from = 'cAb',
+  #             values_from = 'fluorescence')
+is.na(test_group)
+test_group
+test_group %>% pivot_wider(id_cols = c(sample_num),
+                           id_expand = T,
+              names_from = 'cAb',
+              values_from = 'fluorescence')
+
+
+
+test_vec = combined_augmented_data %>% filter(target_vector == 'Beta', Conc. == 250) %>% select(cAb10) %>% unlist()
+test_vec
+
+
+test_grubbs = grubbs.test(test_vec, type = 10)
+test_grubbs$p.value
+
+
+
+# Should return an array with an outlier replaced with NA 
 identify_outliers(test_vec)
+```
+```{r}
+# "For small datasets, one might also want to experiment with 'ndim=1', 'scoring_metric="adj_depth"' and 'penalize_range=TRUE'."
+iso_test_data = combined_augmented_data
+iso_test_vec = iso_test_data['cAb9']
+
+iso_model = isolation.forest(iso_test_vec, ndim = 1, ntrees = 100, nthreads = 4)
+improved_iso_model = isolation.forest(iso_test_vec, ndim = 1, ntrees = 100, scoring_metric = 'adj_depth', penalize_range = T, nthreads = 4)
+
+iso_test_scores = predict(iso_model, iso_test_vec, type = "avg_depth")
+improved_iso_scores = predict(improved_iso_model, iso_test_vec, type = "avg_depth")
+
+plot(iso_test_vec$cAb9, iso_test_scores, type="p", col="darkred",
+     main="Average isolation depth\nfor cAb9 fluorescence values",
+     xlab="cab fluorescence", ylab="Average isolation depth")
+
+plot(iso_test_vec$cAb9, improved_iso_scores, type="p", col="darkred",
+     main="Improved average isolation depth\nfor cAb9 fluorescence values",
+     xlab="cab fluorescence", ylab="Average isolation depth")
+
+# Ok so first let's subset our data 
+full_augmented_fluorescence = combined_augmented_data %>% filter(Conc. > 0.01) %>% select(starts_with('cAb'))
+
+# Then we can train an isolation forest using recommended parameters for small data sets
+full_iso_tree_model = isolation.forest(full_augmented_fluorescence, ndim=1, ntrees = 500, scoring_metric = 'adj_depth', penalize_range = T, nthreads = 4)
+full_iso_scores = predict(full_iso_tree_model, full_augmented_fluorescence)
+
+# Now let's add the iso_scores to our data set
+iso_map_fluorescence = combined_augmented_data %>% filter(Conc. > 0.01) %>% mutate(iso_score = full_iso_scores)
+
+# And we can see that this is simply just a measure of concentration - the highest score values are simply the ones calculated for the highest concentrations
+```
+
+```{r}
+# Alright so all this "concentration" talk makes me really think that I need a sub-module that predicts the relative concentration, then uses that in the model. The first problem that jumps out to me is that we would need two models trained on the same training data, but ideally I would use concentration (provided my estimates are reasonably accurate) as a feature for the classification model. This is more of a practical annoyance than anything else, I would need an actual holdout set then 
+
+# Ideally a simple regression model would  recapitulate the concentration, I should just check that first
+# Let's start by checking the accuracy of a multiple regression model that does not know the variant
+# We'll also set the concentration value of anything below 0.01 as 0, since that's effectively true from a fluorescence standpoint. This model 
+# performs exceedingly poorly, with very few rational predictions. This is likely a result of the fluorescence difference between variants. I 
+# guess if I was comfortable with showing my concentration model the variants, then I could train four different models, one for each variant,
+# then say "alright here are the four potential concentration values based on individual standard curves.
+# 
+
+# The issue is that there's just two covariates here. If you don't know the variant, it's difficult to identify the concentration,
+# if you don't know the concentration, it's difficult to identify the variant. The problem is that if a model was capable of predicting concentration
+# without knowing the variant, then that model could likely predict the variant without the need for a concentration. 
+
+# For me, this is currently an intractable problem. 
+concentration_prediction_data = combined_augmented_data %>% select(-Replicate) %>% filter(Conc. > 0.01)
+# concentration_prediction_data$Conc. = ifelse(concentration_prediction_data$Conc. < 0.01, 0.0, concentration_prediction_data$Conc)
+
+initial_split = initial_split(concentration_prediction_data, prop = 0.75, strata = Conc.)
+conc_training_data = training(initial_split)
+conc_testing_data = testing(initial_split)
+
+bootstrap_train = bootstraps(conc_training_data, times = 3)
+
+conc_rec = recipe(Conc.~., data = conc_training_data) %>% 
+  update_role(target_vector, new_role = 'id') %>% 
+  step_normalize(all_predictors())
+
+pen_vals <- 10^seq(-3, 0, length.out = 10)
+grid <- crossing(penalty = pen_vals, mixture = c(0.1, 1.0))
+
+conc_glm_model = linear_reg(penalty = tune(), mixture = tune()) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet", path_values = pen_vals)
+
+conc_glm_workflow = workflow() %>% 
+  add_recipe(conc_rec) %>% 
+  add_model(conc_glm_model)
+
+get_glmnet_coefs <- function(x) {
+  x %>% 
+    extract_fit_engine() %>% 
+    tidy(return_zeros = TRUE) %>% 
+    rename(penalty = lambda)
+}
+
+parsnip_ctrl = control_grid(extract = get_glmnet_coefs)
+
+glmnet_res = conc_glm_workflow %>% 
+  tune_grid(
+    resamples = bootstrap_train,
+    grid = grid,
+    control = parsnip_ctrl
+)
+glmnet_res
+
+glmnet_res$.extracts[[1]]$.extracts[[1]] %>% head()
+
+conc_test_preds = predict(glm_wf_fit, conc_testing_data)
+
+conc_test_results = data.frame('preds' = conc_test_preds$.pred,
+                               "true" = conc_testing_data$Conc.,
+                               'Perc_error' = ((conc_test_preds$.pred-conc_testing_data$Conc.)/conc_testing_data$Conc.)*100
+                               )
+
+conc_test_results %>% metrics(truth = true, estimate = preds)
+
+conc_test_results %>% filter(true < 1E6 & true > 1e-10) %>% ggplot(aes(x=true, y=Perc_error)) +
+  geom_point()
+
+# conc_rf_model = rand_forest()
+# conc_glm_rf_workflow = workflow() %>% 
+```
+```{r}
+# It may be more reasonable to create a model that classifies these based on discretized bins
+# Discrete conc prediction model
+discrete_conc_predict = function(datset,
+                                 upper_thresh = 251,
+                                 lower_thresh = 0){
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
+  concentrations = dataset$Conc.
+  
+  conc_recipe = recipe(Conc.~., data = dataset) %>% 
+    update_role(SampleNum, Conc., new_role = 'id') %>% 
+    step_bs()
+  
+}
 ```
 

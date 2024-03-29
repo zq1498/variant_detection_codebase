@@ -1,0 +1,152 @@
+---
+title: "batch_variation_testing"
+output: html_document
+date: "2024-03-29"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(doParallel)
+library(outliers) # grubbs.test
+library(stringr) # string processing
+library(isotree) # Outlier detection via isolation forest
+library(gmodels) # CrossTable()
+
+# tidymodels helper package
+library(embed)
+library(kknn)
+library(discrim)
+library(baguette)
+library(rules)
+library(earth)
+
+tidymodels_prefer()
+```
+
+```{r}
+combined_augmented_data = read.csv("combined_augmented_data.csv")
+combined_augmented_data = combined_augmented_data %>% select(-cAb13)
+# Retain variant value, replace replicate value with a rowname column to identify
+# each sample. Color the final heatmap by the variant value and store prediction history
+# alongisde rowname
+fluorescence_sums = rowSums(combined_augmented_data %>% select(starts_with('cAb')))
+avg_fluorescence = rowMeans(combined_augmented_data %>% select(starts_with('cAb')))
+
+combined_augmented_data$batch = factor(c(rep(1, 288), rep(2, 456)))
+
+labeled_augmented_data = combined_augmented_data %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.) %>% 
+  filter(Conc. > 0.1)
+
+labeled_augmented_data
+```
+
+```{r}
+# Attempting to train a model to predict from which batch a sample was drawn from
+set.seed(0703)
+batch_initial_split = initial_split(labeled_augmented_data, strata = batch) 
+batch_training_data = training(batch_initial_split)
+batch_testing_data = testing(batch_initial_split)
+batch_folds = vfold_cv(batch_training_data, v = 5, repeats = 3, strata = batch)
+
+batch_training_data %>% count(batch)
+batch_testing_data %>% count(batch)
+```
+```{r}
+# I'm trying to decide if this model should know the concentration. I'll include it in one
+# but note that I did not convert it to a factor (still a dbl)
+# RESOLUTION: With or without conc the CV results are very similar, they even
+# use the same hyperparameters
+set.seed(0703)
+batch_recipe = recipe(batch~., data = batch_training_data) %>% 
+  update_role(Conc., SampleNum, new_role = 'id')
+
+batch_recipe_concentration = recipe(batch~., data = batch_training_data) %>% 
+  update_role(SampleNum, new_role = 'id')
+
+rf_batch_model = rand_forest(mtry = tune(), min_n = tune(), trees = 1000) %>% 
+  set_engine('ranger') %>% 
+  set_mode('classification')
+
+# I think the parameter set has to be different between both recipes? Because I need to 
+# give it a potential mtry
+rf_batch_params = rf_batch_model %>% extract_parameter_set_dials() %>% 
+  finalize(x = batch_training_data %>% select(-c(batch, SampleNum)))
+rf_batch_param_grid = grid_latin_hypercube(rf_batch_params,
+                                           size = 30)
+
+rf_batch_resample_results = rf_batch_model %>% 
+  tune_grid(
+    batch_recipe,
+    resamples = batch_folds,
+    grid = rf_batch_param_grid,
+    control = control_grid(save_pred = TRUE)
+  )
+
+best_rf_batch_params = select_best(rf_batch_resample_results)
+
+rf_batch_conc_resample_results = rf_batch_model %>% 
+  tune_grid(
+    batch_recipe_concentration,
+    resamples = batch_folds,
+    grid = rf_batch_param_grid,
+    control = control_grid(save_pred = TRUE)
+  )
+
+best_rf_conc_batch_params = select_best(rf_batch_conc_resample_results)
+
+
+collect_metrics(rf_batch_resample_results) %>% filter(.metric == 'accuracy') %>% arrange(-mean)
+collect_metrics(rf_batch_conc_resample_results) %>%  filter(.metric == 'accuracy') %>% arrange(-mean)
+best_rf_batch_params
+best_rf_conc_batch_params
+
+# Hyperparameters are the same for both models, with and wihout concentration
+final_batch_rf_mod = finalize_model(rf_batch_model, best_rf_batch_params)
+final_batch_rf_wf = workflow() %>% 
+  add_model(final_batch_rf_mod) %>% 
+  add_recipe(batch_recipe)
+
+batch_rf_test = final_batch_rf_wf %>% 
+  last_fit(batch_initial_split)
+collect_metrics(batch_rf_test)
+batch_rf_test$.predictions
+```
+```{r}
+# Now lets try the same thing with a radial svm
+set.seed(0703)
+
+svm_batch_recipe = batch_recipe %>% 
+  step_normalize(all_numeric_predictors())
+
+svm_batch_model = svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+  set_engine('kernlab') %>% 
+  set_mode('classification')
+
+svm_param = svm_batch_model %>% extract_parameter_set_dials()
+svm_batch_param_grid = grid_latin_hypercube(svm_param,
+                                           size = 30)
+svm_batch_resample_results = svm_batch_model %>% 
+  tune_grid(
+    svm_batch_recipe,
+    resamples = batch_folds,
+    grid = svm_batch_param_grid,
+    control = control_grid(save_pred = TRUE)
+  )
+collect_metrics(svm_batch_resample_results) %>% filter(.metric == 'accuracy') %>% arrange(-mean)
+
+best_svm_conc_batch_params = select_best(svm_batch_resample_results)
+final_batch_svm_mod = finalize_model(svm_batch_model, best_svm_conc_batch_params)
+final_batch_svm_wf = workflow() %>% 
+  add_model(final_batch_svm_mod) %>% 
+  add_recipe(svm_batch_recipe)
+
+batch_svm_test = final_batch_svm_wf %>% 
+  last_fit(batch_initial_split)
+collect_metrics(batch_svm_test)
+
+
+# Ok so the radial svm provides much better performance on the test set than the random forest, so there may be something to using it as a feature to help predict variant
+# Actually applying that to a random forest, however, doesn't yield better results, I actually think it harms the model
+```
+
