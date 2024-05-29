@@ -12,26 +12,43 @@ library(stringr)
 library(isotree)
 library(gmodels)
 library(embed)
+library(vip)
 # source("outlier_handling_functions.R")
 ```
 
 ```{r}
-combined_augmented_data = read.csv("combined_augmented_data.csv")
-combined_augmented_data = combined_augmented_data %>% select(-cAb13)
-# Retain variant value, replace replicate value with a rowname column to identify
-# each sample. Color the final heatmap by the variant value and store prediction history
-# alongisde rowname
-fluorescence_sums = rowSums(combined_augmented_data %>% select(starts_with('cAb')))
-avg_fluorescence = rowMeans(combined_augmented_data %>% select(starts_with('cAb')))
+combined_augmented_data_median = read.csv("dab18_combined_augment_outlier_removed_median_subtracted.csv")
+combined_augmented_data_median = combined_augmented_data_median %>% select(-cAb13) %>% mutate(across(target_vector, as.factor))
 
-labled_augmented_data = combined_augmented_data %>% select(-Replicate) %>% 
-  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.) # %>% 
-  # mutate(sum_fluorescence = fluorescence_sums)
+combined_augmented_data_mean = read.csv("dab18_combined_augment_outlier_removed_mean_subtracted.csv")
+combined_augmented_data_mean = combined_augmented_data_mean %>% select(-cAb13) %>% mutate(across(target_vector, as.factor))
 
-batch_labeled_augmented_data = labled_augmented_data
-batch_labeled_augmented_data$batch = factor(c(rep(1, 288), rep(2, 456)))
+combined_augmented_data_mean_og = read.csv("combined_augmented_data.csv")
+combined_augmented_data_mean_og = combined_augmented_data_mean_og %>% select(-cAb13) %>% mutate(across(target_vector, as.factor))
+
+ratio_df_p1
+combined_augmented_data_median = combined_augmented_data_median %>% select(-cAb13) %>% mutate(across(target_vector, as.factor))
+
+labeled_augmented_ratio_data = ratio_df_p1 %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(ratio_df_p1), .before = Conc.) 
+
+labeled_augmented_median_data = combined_augmented_data_median %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data_median), .before = Conc.) 
+
+labeled_augmented_mean_data = combined_augmented_data_mean %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data_mean), .before = Conc.) 
+
+labeled_augmented_mean_og_data = combined_augmented_data_mean %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data_mean), .before = Conc.) 
+# wt_delta_data = labled_augmented_data %>% filter(target_vector %in% c('WT', 'Delta'))
+# wt_delta_data
+# 
+# combined_augment_long = combined_augmented_data %>% pivot_longer(cols = -c(Replicate, Conc., target_vector),
+#                                                                  names_to = 'cabs',
+#                                                                  values_to = 'fluorescence')
+# sorted_augment_long = combined_augment_long %>% group_by(target_vector, Conc., Replicate, cabs) %>% arrange(.by_group = TRUE)
+# write.csv(sorted_augment_long, "sorted_augmented_data_long.csv")
 ```
-
 
 ```{r}
 augmented_modeling_function = function(dataset,
@@ -85,32 +102,141 @@ augmented_modeling_function = function(dataset,
         grid = param_grid,
         control = control_grid(save_pred = TRUE)
       )
-  
-  metrics = collect_metrics(resample_results)
 
   return(list("resample_results" = resample_results,
               "concentrations" = concentrations))
 }
+```
 
-labled_augmented_data
-rf_model_results = augmented_modeling_function(labled_augmented_data,
-                            target = "target_vector",
-                            k_folds = 5,
-                            model_type = 'rf',
-                            lower_thresh = 0.1,
-                            upper_thresh = 251)
+```{r}
+test = original_rf_model$resample_results %>% show_best(metric = 'roc_auc') %>% slice(1) # extract_fit_parsnip()
+original_rf_model$resample_results
+```
 
-collect_predictions(rf_model_results$resample_results)
+```{r}
+# Comparing performance of my data processed with my original method (no outlier removal), outlier removal of individual capture spots using mean background value, and outlier removal of individual capture spots but using median background value
+# original_rf_model = augmented_modeling_function(labeled_augmented_mean_og_data,
+#                             target = "target_vector",
+#                             k_folds = 5,
+#                             model_type = 'rf',
+#                             lower_thresh = 0.1,
+#                             upper_thresh = 251)
 
-rf_cv_results = collect_best_predictions(rf_model_results$resample_results)
+original_cv_results = collect_best_predictions(original_rf_model$resample_results)
 
-rf_conf_analysis = analyze_confidence(rf_cv_results$best_param_probs,
-                                      concentration_values = rf_model_results$concentrations,
-                                      prediction_row = rf_cv_results$best_param_preds_rows)
-rf_conf_analysis
-rf_conf_analysis %>% filter(concentration > .9) %>% count(correct)
+original_conf_analysis = analyze_confidence(original_cv_results$best_param_probs,
+                                      concentration_values = original_rf_model$concentrations,
+                                      prediction_row = original_cv_results$best_param_preds_rows)
+
+# 
+# new_mean_model_results = augmented_modeling_function(labeled_augmented_mean_data,
+#                             target = "target_vector",
+#                             k_folds = 5,
+#                             model_type = 'rf',
+#                             lower_thresh = 0.1,
+#                             upper_thresh = 251)
+
+new_mean_cv_results = collect_best_predictions(new_mean_model_results$resample_results)
+
+new_mean_conf_analysis = analyze_confidence(new_mean_cv_results$best_param_probs,
+                                      concentration_values = new_mean_model_results$concentrations,
+                                      prediction_row = new_mean_cv_results$best_param_preds_rows)
+
+# new_median_model_results = augmented_modeling_function(labeled_augmented_median_data,
+#                             target = "target_vector",
+#                             k_folds = 5,
+#                             model_type = 'rf',
+#                             lower_thresh = 0.1,
+#                             upper_thresh = 251)
+
+new_median_cv_results = collect_best_predictions(new_median_model_results$resample_results)
+
+new_median_conf_analysis = analyze_confidence(new_median_cv_results$best_param_probs,
+                                      concentration_values = new_median_model_results$concentrations,
+                                      prediction_row = new_median_cv_results$best_param_preds_rows)
+
+# new_median_ratio_model_results = augmented_modeling_function(labeled_augmented_ratio_data,
+#                             target = "target_vector",
+#                             k_folds = 5,
+#                             model_type = 'rf',
+#                             lower_thresh = 0.1,
+#                             upper_thresh = 251)
+
+new_median_ratio_cv_results = collect_best_predictions(new_median_ratio_model_results$resample_results)
+
+new_median_ratio_conf_analysis = analyze_confidence(new_median_ratio_cv_results$best_param_probs,
+                                      concentration_values = new_median_ratio_model_results$concentrations,
+                                      prediction_row = new_median_ratio_cv_results$best_param_preds_rows)
+
+# new_mean_ratio_model_results = augmented_modeling_function(labeled_augmented_ratio_data,
+#                             target = "target_vector",
+#                             k_folds = 5,
+#                             model_type = 'rf',
+#                             lower_thresh = 0.1,
+#                             upper_thresh = 251)
+
+new_mean_ratio_cv_results = collect_best_predictions(new_mean_ratio_model_results$resample_results)
+
+new_mean_ratio_conf_analysis = analyze_confidence(new_mean_ratio_cv_results$best_param_probs,
+                                      concentration_values = new_mean_ratio_model_results$concentrations,
+                                      prediction_row = new_mean_ratio_cv_results$best_param_preds_rows)
+```
+
+```{r}
+original_cv_results
+original_conf_analysis %>% filter(concentration>.9) %>% count(correct)
 
 
+new_mean_cv_results
+new_mean_conf_analysis %>% filter(concentration>.9) %>% count(correct)
+
+
+new_median_cv_results
+new_median_conf_analysis %>% filter(concentration>.9) %>% count(correct)
+
+# new_median_conf_analysis %>% filter(concentration > 1) %>% count(correct)
+# median_threshold_augment = labeled_augmented_median_data %>% filter(Conc. > 0.1)
+new_median_ratio_cv_results
+new_median_ratio_conf_analysis %>% filter(concentration>.9) %>% count(correct)
+
+new_mean_ratio_cv_results
+new_mean_ratio_conf_analysis
+
+original_conf_analysis %>% select(c(true_class, correct)) %>% 
+  group_by(true_class) %>% 
+  summarise(perc_correct = sum(correct)/length(true_class)) %>% 
+  ggplot(aes(x=true_class, y = perc_correct)) + 
+  geom_bar(stat = 'identity')+
+  geom_text(aes(y = perc_correct-0.05, label = round(perc_correct,3)))
+
+new_mean_conf_analysis %>% select(c(true_class, correct)) %>% 
+  group_by(true_class) %>% 
+  summarise(perc_correct = sum(correct)/length(true_class)) %>% 
+  ggplot(aes(x=true_class, y = perc_correct)) + 
+  geom_bar(stat = 'identity')+
+  geom_text(aes(y = perc_correct-0.05, label = round(perc_correct,3)))
+
+new_median_conf_analysis %>% 
+  group_by(true_class) %>% 
+  summarise(perc_correct = sum(correct)/length(true_class)) %>% 
+  ggplot(aes(x=true_class, y = perc_correct)) + 
+  geom_bar(stat = 'identity')+
+  geom_text(aes(y = perc_correct-0.05, label = round(perc_correct,3)))
+
+new_median_ratio_conf_analysis %>% select(c(true_class, correct)) %>% 
+  group_by(true_class) %>% 
+  summarise(perc_correct = sum(correct)/length(true_class)) %>% 
+  ggplot(aes(x=true_class, y = perc_correct)) + 
+  geom_bar(stat = 'identity')+
+  geom_text(aes(y = perc_correct-0.05, label = round(perc_correct,3)))
+
+original_cv_results$Accuracy
+new_mean_cv_results$Accuracy
+new_median_cv_results$Accuracy
+new_median_ratio_cv_results$Accuracy
+```
+
+```{r}
 svm_model_results = augmented_modeling_function(labled_augmented_data,
                             'target_vector',
                             k_folds = 5,
@@ -126,7 +252,152 @@ analyze_confidence(svm_cv_results$best_param_probs,
                    concentration_values = svm_model_results$concentrations,
                    prediction_row = svm_cv_results$best_param_preds_rows)
 
+binom_rf_model = augmented_modeling_function(wt_delta_data,
+                                             'target_vector',
+                                              k_folds = 5,
+                                              model_type = 'rf',
+                                              lower_thresh = 0.1,
+                                              upper_thresh = 251)
+
+# Plotting two probability distributions per graph. The first is probability
+# of predicting WT for all 
+
+# Which row values are incorrect most often - for each value in best_param_preds_rows
+# I can get the value of 'correct'
+incorrect_pred_obs = data.frame(
+  original_row_val = rf_cv_results$best_param_preds_rows,
+  correct = rf_cv_results$best_param_probs$correct[rf_cv_results$best_param_preds_rows]
+)
+
+# I should repeat the experiment with like five replicates but models seem to predict an observation
+# as correct both times or incorrect both times. Let's get the row number of each sample incorrectly predicted twice
+summed_preds = incorrect_pred_obs %>% group_by(original_row_val) %>% summarise(sum_correct = sum(correct))
+incorrect_row_nums = summed_preds %>% filter(sum_correct == 0)
+incorrect_row_nums$original_row_val
+
+# Where are these actual values from, the original global set or the test set specifically? It goes from 1-372 so I assume the original
+augment_threshold = combined_augmented_data %>% filter(Conc. > 0.1 & Conc. < 251)
+incorrect_vals_threshold_augment = augment_threshold[incorrect_row_nums$original_row_val,]
+
+# Ok now I can take the augment_threshold and anti join it to the vals from threshold
+correct_vals_threshold_augment = anti_join(augment_threshold, incorrect_vals_threshold_augment)
+
+# Now we can recombine them with labels and 
+incorrect_vals_threshold_augment$correct = 0
+correct_vals_threshold_augment$correct = 1
+
+library(ggbeeswarm)
+
+augment_threshold_with_correct = bind_rows(correct_vals_threshold_augment, incorrect_vals_threshold_augment)
+augment_threshold_with_correct
+
+for (variant in c('Omicron', 'WT', 'Beta', 'Delta')){
+  title = paste0(variant, ' fluorescence by model predictive accuracy and concentration')
+  p1 = augment_threshold_with_correct %>% 
+    filter(target_vector == variant) %>% 
+    pivot_longer(cols = -c(Replicate, Conc., target_vector, correct),
+                                                  names_to = 'cab',
+                                                  values_to = 'fluorescence') %>%
+    ggplot(aes(x=as.factor(round(Conc., 3)), y=fluorescence))+
+    geom_beeswarm(aes(color = as.factor(correct)), size = .5) +
+    geom_text(aes(label = Replicate), size = 2)+
+    facet_wrap(facets = 'cab', 
+               scales = 'fixed')+
+    theme_classic() +
+    theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1, size = 6))+
+    labs(title = title)
+
+  print(p1)
+  ggsave(filename = paste0('incorrect_correct_plots/', title, '.png'),
+         device = 'png')
+}
+# I'm not sure that this plot tells me anything, but I also don't know what plot will
+# I nned to see what the differences are between observations that are incorrectly predicted
+# vs those that are correctly predicted, but what would I actually expect to see.
+variants = unique(augment_threshold_with_correct$target_vector)
+unique(augment_threshold_with_correct$Conc.)
+
+correct_vals_threshold_augment %>% filter(cAb14 > 3.5)
+correct_vals_threshold_augment %>% filter(cAb10 > 2)
+correct_vals_threshold_augment %>% filter(cAb9 > 3)
+correct_vals_threshold_augment %>% filter(cAb15 > 4)
+correct_under_rules = bind_rows(correct_vals_threshold_augment %>% filter(cAb14 > 3.5),
+                              correct_vals_threshold_augment %>% filter(cAb10 > 2),
+                              correct_vals_threshold_augment %>% filter(cAb9 > 3),
+                              correct_vals_threshold_augment %>% filter(cAb15 > 4))
+# Were any values predicted as omicron with a cAb21 value greater than 2.5
+# I need to get the vector of predictions from the model training
+# incorrect_vals_threshold_augment %>% filter(cAb21 > 2.5)
+
+incorrect_vals_threshold_augment %>% filter(cAb14 > 3.5)
+incorrect_vals_threshold_augment %>% filter(cAb10 > 2)
+incorrect_vals_threshold_augment %>% filter(cAb9 > 3)
+incorrect_vals_threshold_augment %>% filter(cAb15 > 4)
+corrected_under_rules = bind_rows(incorrect_vals_threshold_augment %>% filter(cAb14 > 3.5),
+                                incorrect_vals_threshold_augment %>% filter(cAb10 > 2),
+                                incorrect_vals_threshold_augment %>% filter(cAb9 > 3),
+                                incorrect_vals_threshold_augment %>% filter(cAb15 > 4))
+distinct(correct_under_rules)
+distinct(corrected_under_rules)
+# total_correct_under_rules = 
+total_correct_rules_augment = bind_rows(augment_threshold_with_correct %>% filter(cAb14 > 3.5),
+                              augment_threshold_with_correct %>% filter(cAb10 > 2),
+                              augment_threshold_with_correct %>% filter(cAb9 > 3),
+                              augment_threshold_with_correct %>% filter(cAb15 > 4))
+
+augment_threshold_with_correct %>% filter(cAb14 > 3.5)
+augment_threshold_with_correct %>% filter(cAb10 > 2)
+augment_threshold_with_correct %>% filter(cAb9 > 3)
+augment_threshold_with_correct %>% filter(cAb15 > 4)
+
+# Assuming that all rules are 100% correct, the manual rules classifies 86 observations correctly compared to 58 without the rules
+# Knowing that the rules produce 4 (really 2 because I have outliers to remove) incorrecy responses
+
+# I need to now decide whether I'm going to set these values aside and classify them as is or include them in the training set somehow
+rf_cv_results$best_param_probs
+omicron_predicted_values = rf_cv_results$best_param_probs %>% bind_cols(Rows = rf_cv_results$best_param_preds_rows) %>% filter(max_prob == 'Omicron' & correct == 0)
+omicron_predicted_values
+rf_cv_results$best_param_preds_rows
+omicron_predicted_observations = augment_threshold[omicron_predicted_values$Rows,]
+omicron_predicted_observations %>% filter(cAb25 > 1)
 ```
+
+```{r}
+# Built in classification rules
+# If cAb9 > 3 --> WT
+# If cAb10 > 2 --> WT
+# If cAb14 > 3.5 --> Delta
+# If cAb15 > 4 --> Delta
+# These will come pretty close to perfectly classifying the upper end of the concentration spectrum
+```
+
+```{r}
+# Plot probability value distributions for each class
+rf_cv_results$best_param_probs %>% pivot_longer(cols = c(Beta, Delta, Omicron, WT),
+                                                names_to = 'Variant_prob',
+                                                values_to = 'Probabilities') %>% 
+  select(c(true_class, Variant_prob, Probabilities)) %>% 
+  mutate(across(is.numeric, log10)) %>% 
+  ggplot(aes(x=Probabilities))+
+  geom_density(aes(color = true_class))
+
+# First, plot four probability distributions - the probability that WT points are 
+# WT vs probabiltiy that the classes from all other points are WT. Repeat this with all
+# other classes
+for (class_lab in c('Delta', 'WT', 'Beta', 'Omicron')){
+  p = rf_cv_results$best_param_probs %>% pivot_longer(cols = c(Beta, Delta, Omicron, WT),
+                                                  names_to = 'Variant_prob',
+                                                  values_to = 'Probabilities') %>% 
+    select(c(true_class, Variant_prob, Probabilities)) %>% 
+    filter(Variant_prob == class_lab) %>% 
+    ggplot(aes(x=Probabilities, color = true_class)) +
+    # geom_histogram(aes(y=..density..))+
+    geom_density()+
+    labs(title = paste0("Class probability of observation belonging to ", class_lab))
+  print(p)
+}
+```
+
 ```{r}
 # RF prediction with batch information
 rf_model_results = augmented_modeling_function(batch_labeled_augmented_data,
@@ -148,7 +419,6 @@ rf_batch_conf_analysis = analyze_confidence(rf_batch_cv_results$best_param_probs
 rf_batch_model_results$resample_results
 rf_batch_model_results$resample_results %>% show_best()
 ```
-
 
 ```{r}
 collect_best_predictions = function(model_results){
@@ -233,6 +503,140 @@ analyze_confidence = function(probability_df,
 ```
 
 ```{r}
+rule_classification = function(dataset, keep = FALSE){
+  # SET UP CLASSIFICATION RULES
+  mod_data = dataset %>% mutate(predicted_class = case_when(
+    cAb14 > 3.5 ~ 'Delta',
+    cAb9 > 3 ~ 'WT',
+    cAb10 > 2 ~ 'WT',
+    cAb15 > 4 ~ 'Delta',
+    .default = 'Unknown'
+  ))
+  if (keep == TRUE){
+    # If keep is TRUE, full data includes all original data points and just removes the predicted
+    # class column.
+    # Classified data is only the observations which were classified under the given rules
+    return(list('full_data' = mod_data %>% select(-predicted_class),
+           'classified_data' = mod_data %>% filter(predicted_class != 'Unknown')))
+  }
+  else {
+    # If keep is FALSE, full data only includes observations that were not classified by the given rules
+    # Classified data is the same as when keep is TRUE
+    return(list('full_data' = mod_data %>% filter(predicted_class == 'Unknown') %>% select(-predicted_class),
+           'classified_data' = mod_data %>% filter(predicted_class != 'Unknown')))
+  }
+}
+
+rule_classification(augment_threshold)
+
+augmented_modeling_with_rules = function(dataset,
+                                       target,
+                                       k_folds,
+                                       model_type,
+                                       lower_thresh = 0,
+                                       upper_thresh = 251){
+  
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
+  
+  # Use discrete rules to remove 'obvious' examples
+  discrete_rule_classifier = rule_classification(dataset, keep = FALSE)
+  dataset = discrete_rule_classifier$full_data
+  rule_classified_data = discrete_rule_classifier$classified_data
+  
+  concentrations = dataset$Conc.
+  
+   gen_rec = recipe(target_vector~., data = dataset) %>%
+      update_role(SampleNum, Conc., new_role = 'id') # %>%
+      # step_umap(neighbors = 30, keep_original_cols = FALSE)
+   
+  # gen_rec = recipe(target_vector~., data = dataset) %>% 
+    # update_role(SampleNum, Conc., new_role = 'id') # %>% 
+    # step_umap(neighbors = 30, keep_original_cols = T)
+    # step_BoxCox(all_predictors()) %>% 
+    # step_normalize(Conc.)
+
+  folds = vfold_cv(dataset, v=k_folds, repeats = 2, strata = target_vector)
+  
+  if (model_type == 'rbf_svm'){
+    mod = svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+    set_mode('classification') %>% 
+    set_engine('kernlab')
+    
+    gen_rec = gen_rec %>% step_normalize(all_predictors())
+    
+    params = extract_parameter_set_dials(mod)
+    param_grid = grid_latin_hypercube(params,
+                                      size = 30)
+  }
+  
+  if (model_type == 'rf'){
+    mod = rand_forest(trees = 5000, mtry = tune(), min_n = tune()) %>% 
+      set_mode('classification') %>% 
+      set_engine('ranger')
+    
+    params = extract_parameter_set_dials(mod) %>% finalize(x = dataset %>% select(-c(target_vector, SampleNum, Conc.)))
+    param_grid = grid_latin_hypercube(params,
+                                      size = 20)
+  }
+  
+  resample_results = mod %>%
+      tune_grid(
+        gen_rec,
+        resamples = folds,
+        grid = param_grid,
+        control = control_grid(save_pred = TRUE)
+      )
+  
+  metrics = collect_metrics(resample_results)
+
+  return(list("resample_results" = resample_results,
+              "concentrations" = concentrations,
+              "rule_classified_data" = rule_classified_data))
+}
+
+
+rf_model_w_rules_results = augmented_modeling_with_rules(labled_augmented_data,
+                            target = "target_vector",
+                            k_folds = 5,
+                            model_type = 'rf',
+                            lower_thresh = 0.1,
+                            upper_thresh = 251)
+# 43/45 predicted correctly with discrete rules
+sum(ifelse(rf_model_w_rules_results$rule_classified_data$predicted_class == rf_model_w_rules_results$rule_classified_data$target_vector, 1, 0))/
+  length(rf_model_w_rules_results$rule_classified_data$predicted_class)
+rf_model_w_rules_results$concentrations
+# Training a random forest model on the remaining data - results below
+non_rule_rf_classified_data = collect_best_predictions(rf_model_w_rules_results$resample_results)
+
+preclassified_confidence = analyze_confidence(non_rule_rf_classified_data$best_param_probs,
+                   concentration_values = rf_model_w_rules_results$concentrations,
+                  prediction_row = non_rule_rf_classified_data$best_param_preds_rows
+                   )
+preclassified_confidence
+```
+
+Ok so closing preliminary notes for 4/15 With four rules, 43 of 45 relevant samples can be correctly classified as WT and Delta. If we remove these classified values from our test set, then train a random forest model on the remaining data, we obtain an accuracy of 96% (210/218) for high confidence predictions, 70.9% (112/158) for medium confidence prediction, and 40.3% accuracy for low confidence predictions. Preclassified + high confidence -\> 96% (253/263) accurate Preclassified + high + medium confidence -\> 86.7% (365/421) accurate All done with between Conc. \< 251 & Conc. \> 0.1
+
+Next I should see what happens if I leave the data in, but override the label at the end
+
+I also should see what happens when I remove some columns, such as cAb10 that are used mainly for the discrete classification rules
+
+I also have some potential ratios that may be helpful for identifying omicron values, beta values, and wt
+
+```{r}
+# Ratios that ideally isolate omicron from the remaining abs
+#   -cAb25 almost never shows omicron signal, but responds to all others, unlike cAb26, 20, and 7 which show a reasonably earlier response to Omicron
+#   -I wonder if it matters which cab is the numerator and which is the denominator
+#   -I also wonder if these would be better off as interaction terms rather than ratios
+test_pivot = augment_threshold_with_correct
+test_pivot = test_pivot %>% pivot_longer(cols = -c(Replicate, Conc., target_vector, correct),
+                                         names_to = 'cAb',
+                                         values_to = 'fluorescence')
+tdf = augment_threshold_with_correct %>% filter(target_vector == 'Omicron' & cAb10>1)
+tdf
+```
+
+```{r}
 # Augmented modeling function with bayesian optimization + Xgboost results
 augmented_xgb_modeling_function = function(dataset,
                                        target,
@@ -296,7 +700,7 @@ augmented_xgb_modeling_function = function(dataset,
 }
 
 xgb_model_results = augmented_xgb_modeling_function(labled_augmented_data,
-                            'target_vector',
+                            target = "target_vector",
                             k_folds = 5,
                             lower_thresh = 0.1,
                             upper_thresh = 251)
@@ -328,7 +732,6 @@ CrossTable(best_xgb_param_probs$max_prob,
 
 xgb_model_results$resample_results %>% collect_metrics(metrics = 'roc_auc') %>% arrange(-mean)
 ```
-
 
 ```{r}
 two_step_xgb_tune = function(dataset,
@@ -485,79 +888,6 @@ two_step_conf_model = function(){
 ```
 
 ```{r}
-# This is a sort of poor method for identifying outliers anyway, since it can't really
-# be applied to new data based on parameters estimated on training data
-# i.e., since I don't know the concentration of a test observation, I can't compare it 
-# to the same distribution as I'm comparing these to, so I'd never be able to predict 
-test_func = function(vec,
-                     sample_num){
-  # vec = unlist(vec)
-  grubbs = grubbs.test(vec, type = 10)
-  outlier_position = str_split_i(string = test_grubbs$alternative, pattern = " +", i = 1)
-  max_val = max(vec)
-  min_val = min(vec)
-  
-  if (grubbs$p.value < 0.10){
-    print(paste0(outlier_position, " outlier detected"))
-    
-    if (outlier_position == 'higher'){
-      vec[[vec==max_val]] = 'NA'
-    }
-    
-    if (outlier_position == 'lower'){
-      vec[[vec==min_val]] = 'NA'
-    }
-    print(vec)
-  }
-  
-  return(data.frame("fluorescence" = vec,
-                    'sample_num' = sample_num))
-}
-
-combined_augmented_data %>% 
-  mutate("sample_num" = row.names(combined_augmented_data)) %>% 
-  select(-Replicate) %>% 
-  pivot_longer(cols = -c(target_vector, Conc., sample_num),
-               names_to = 'cAb',
-               values_to = 'fluorescence') %>% 
-  group_by(target_vector, Conc., cAb) %>% 
-  group_modify(~test_func(.x$fluorescence, .x$sample_num)) %>% 
-  pivot_wider(names_from = 'cAb',
-              values_from = 'fluorescence')
-
-test_group = combined_augmented_data %>% 
-  mutate("sample_num" = row.names(combined_augmented_data)) %>% 
-  select(-Replicate) %>% 
-  pivot_longer(cols = -c(target_vector, Conc., sample_num),
-               names_to = 'cAb',
-               values_to = 'fluorescence') %>% 
-  group_by(target_vector, Conc., cAb) %>% 
-  group_modify(~test_func(.x$fluorescence, .x$sample_num)) %>% 
-  ungroup() # %>% 
-  # pivot_wider(names_from = 'cAb',
-  #             values_from = 'fluorescence')
-is.na(test_group)
-test_group
-test_group %>% pivot_wider(id_cols = c(sample_num),
-                           id_expand = T,
-              names_from = 'cAb',
-              values_from = 'fluorescence')
-
-
-
-test_vec = combined_augmented_data %>% filter(target_vector == 'Beta', Conc. == 250) %>% select(cAb10) %>% unlist()
-test_vec
-
-
-test_grubbs = grubbs.test(test_vec, type = 10)
-test_grubbs$p.value
-
-
-
-# Should return an array with an outlier replaced with NA 
-identify_outliers(test_vec)
-```
-```{r}
 # "For small datasets, one might also want to experiment with 'ndim=1', 'scoring_metric="adj_depth"' and 'penalize_range=TRUE'."
 iso_test_data = combined_augmented_data
 iso_test_vec = iso_test_data['cAb9']
@@ -663,6 +993,7 @@ conc_test_results %>% filter(true < 1E6 & true > 1e-10) %>% ggplot(aes(x=true, y
 # conc_rf_model = rand_forest()
 # conc_glm_rf_workflow = workflow() %>% 
 ```
+
 ```{r}
 # It may be more reasonable to create a model that classifies these based on discretized bins
 # Discrete conc prediction model
@@ -678,4 +1009,3 @@ discrete_conc_predict = function(datset,
   
 }
 ```
-

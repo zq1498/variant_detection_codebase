@@ -1,0 +1,14 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-01-22"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+```
+
+```{r}
+combined_augmented_data = read.csv("")
+```
+

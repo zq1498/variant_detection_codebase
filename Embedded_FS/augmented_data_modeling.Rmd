@@ -202,7 +202,7 @@ enhance_flag_df = function(flag_df, dataset){
 # all outlier values and replace them with the mean value or NA if you'd like to
 # use an alternative imputation method. It returns a dataset of the same
 # dimensions as the original, with the outlier values changed.
-replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
+replace_outliers = function(dataset, enhanced_flag_df, impute_method='NA'){
   row_numbers = 1:nrow(dataset)
   dataset = bind_cols("row_number" = row_numbers, dataset)
   matching_row_arr = list()
@@ -245,7 +245,7 @@ replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
 
 #------------------------------------------------------------------------------#
 # Outlier control function
-main_outliers_detection_function = function(dataset, threshold, impute = 'mean') {
+main_outliers_detection_function = function(dataset, threshold, impute = 'NA') {
   outlier_test_df_list = dataset %>% filter(Conc. > threshold) %>% group_by(Conc., target_vector) %>% group_split()
   flag_df = NULL
   
@@ -295,12 +295,17 @@ DR_Viz = function(dataset){
   geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
   facet_wrap('pairs', scales = 'free')+
   scale_y_continuous(limits = c(0,5))+
-  scale_x_log10()
+  scale_x_log10()+
+  theme_classic()+
+  labs(title = "Dose response curves for combined augmented data",
+       x = "Concentration (ng/ml)",
+       y = "Fluorescence (A.U.)")
 }
 
 DR_Viz(augmented_18_data_1)
 DR_Viz(augmented_18_data_2)
-DR_Viz(combined_augmented_data)
+DR_Viz(combined_augmented_data %>% select(-Replicate))
+ggsave(filename = "combined_augmented_data_dose_response.png", DR_Viz(combined_augmented_data %>% select(-Replicate)))
 DR_Viz(outlier_removed_df)
 ```
 

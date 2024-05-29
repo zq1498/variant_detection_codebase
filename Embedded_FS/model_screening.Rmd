@@ -11,6 +11,7 @@ library(outliers) # grubbs.test
 library(stringr) # string processing
 library(isotree) # Outlier detection via isolation forest
 library(gmodels) # CrossTable()
+library(vip)
 
 # tidymodels helper package
 library(embed)

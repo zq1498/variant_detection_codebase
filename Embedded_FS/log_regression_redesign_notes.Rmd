@@ -1,0 +1,193 @@
+---
+title: "glm_resampling_functions"
+output:
+  pdf_document: default
+  html_document: default
+date: "2023-02-06"
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(glmnet)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+```
+Whats this sucker gotta do:
+The GLM CV function with FS works, and it's nice. The problem is that it's
+extremely inflexible, and I think there's a significant amount of duplication
+going on. Let's walk through the logic and data structures quickly.
+
+--------------------------------------------------------------------------------
+Folds:
+
+-Global fold: Used to split the full dataset (global data) into a training and 
+testing set. The training set is then split by the external folds to produce 
+training and testing data for the external resample. In this way, a test set
+can be completely reserved for testing with feature selected models.
+
+External fold: Used to split the training set created by global fold further into
+a training and testing set that is inputted to the external resample loop to 
+identify an optimal lambda and rank coefficients so that the top n (determined
+by user) features are used as input to the global models, rather than the entire
+feature set 
+
+--------------------------------------------------------------------------------
+Resampling loops:
+
+Internal resample: 
+Definition: The K-fold CV loop employed by the glmnet function
+to identify optimal hyperparameters in a model. This is entirely handled by the 
+cv.glmnet function when creating "External models"
+
+Input: 
+Training set determined by the current external fold
+
+Creates data that is stored in:
+  -External model, which is used to provide a model to external prediction and
+  to provide the optimal lambda
+
+External resample: 
+Definition: The K-fold CV loop used to optimize lambda and obtain the 
+coefs associated with that optimal lambda. I don't care specifically what the 
+lambda is each time, since I'm establishing the ability of a model type to learn
+the data generating function (DGF), not to find the most effective lambda. I do,
+however, care about the average coefficients produced by the models created during
+this resampling loop. I add each of these models to a list and feed this list into
+get_cv_coefs in order to rank the features by importance. I then use this importance
+ranking to determine which features get included in the global model.
+
+Input:
+  -The training set of the global fold, which is then split into an external train
+  and test based on the current external fold
+
+Creates data that is stored in:
+  -External_perf_df
+  -External_conf_table_list
+  -External_opt_model_list
+
+Global resample: 
+Definition: the K-fold CV loop used to optimize lambda and obtain the coefs
+associated with global models. The models and optimal lambdas are used to determine
+the overall performance of the feature selected model trained on the global training
+data. Again, I don't really care about the lambdas, but I do care about the average
+coefficients and the results and the subset of features used to produce those results
+(as well as their coefs)
+
+Input:
+  -Full dataset, which is then split into a training and testing set. The training
+  set is used to identify feature subsets and the testing set is used as a reserved
+  dataset for measuring performance of the feature selected dataset
+
+Creates data that is stored in:
+  -Global_perf_df
+  -Global_conf_table_list
+  -Global_opt_model_list
+  -sorted_coefs
+
+--------------------------------------------------------------------------------
+Data structures:
+**Note: These are just the structures returned by the function, not any 
+intermediate structures**
+
+-external_perf_df: keeps track of the performance of the external resampling function.
+  only really returned as a measure of internal performance. I rarely care about this
+-global_perf_df: Keeps track of the performance of the global resampling function.
+  used to assess the results of the final feature selected models. I almost always
+  want to look at this.
+
+-external_conf_table_list: Keeps track of the confusion matrices for each iteration of 
+  the external cross-validation. I never really want to look at this but I suppose I 
+  could imagine wanting to
+-global_conf_table_list: Keeps track of the confusion matrices for each iteration of 
+  the global cross-validation. Again, I never really care about this, but I can see
+  it being useful in some cases.
+**Note: it's a pain in the ass to export thiese confusion matrices to a human readable
+  format. The best I have right now is to toss them into a text file, which at that
+  point is like, why bother? I've also tried exporting as a csv and it's an abomination**
+
+-external_opt_model_list: Keeps track of the optimal models created during the 
+  external resampling loop. This list is fed directly into the get_cv_coefs function
+  to give me the optimal coefficients, which I used to down-select the global dataset
+-global_opt_model_list: Keeps track of the optimal models created during the global
+  resampling loop. This list is fed directly into the get_cv_coefs function to 
+  give me the magnitude of the coefficients used in the feature selected model,
+  mainly as a measure of feature importance.
+  
+-average_coef_plot_list: Stores the feature importance plot returned by get_cv_coefs.
+-sorted_coefs: Returns the most important features as ranked by the sum of the magnitude
+  of their average betas, sorted obviously.
+
+Notes: I think it would be cool to set a threshold (like a while loop), that says
+while the accuracy of the the top N features is below a certain threshold, repeat
+the model building loop and increase N by 1
+
+I would also love to somehow identify which data points were consistently being 
+predicted incorrectly, and if all of them are from the lower range of analyte conc.
+
+---------------------------------------------------------------------------------
+Internal function logic:
+
+-First I initialize most of the data structures described above (really all except
+  sorted coefs). I got into this habit of initializing objects to null, then using
+  an if object == NULL{set object equal to piece of data}, then binding the data
+  all together after that. I think I only really need to do that for data frames,
+  because when I add to lists I can just append based on an index. There's surely
+  a more in-built way of initializing the dataf rame object but this seems to work fine.
+  Maybe I'll find that better way later.
+  
+-Since I prefer to touch the data as little as possible, I feed in the full data set,
+  which includes some fucky columns, so I remove those, then scale my data set.
+    -Note that in another iteration of this function, I don't scale my data set here
+    and instead scale it during my external and global resamples so that I can use
+    more complex transforms like Box-Cox and YJ.
+    -I also have the option here to have a numerical threshold based on the concentration
+    of analyte that subsets the data frame. It's pretty clear that super low levels of 
+    analyte lead to low signals and terrible predictive performance.
+  
+-The function has three nested for loops, yikes. First, I have an outer loop that
+  controls the number of times the entire process (global and internal resampling)
+  are repeated. This is feasible for fast models like Lasso, but may be less appropriate
+  for heftier models.
+    - The next for loop is the global resampling loop
+      - The final for loop is the external resampling loop
+     
+-Regardless, I start my outer for loop, then I create my global folds, then I
+  initialize two indices (global and external ind) that I use later to (1) index
+  the coef_plot list, the confidence matrix list, and the optimal model list and
+  (2) to keep track of the iteration of my resampling
+  
+-Right so after that I hop into my global resample loop, create my global train and test,
+then create the external folds that I'll use to partition the global data with into
+the external train and test set.
+
+-I go into the external resample loop and split the global train data into externally
+training and testing data. I then create a model formula and the model matrices 
+necessary for glmnet model creation. I then use cv.glmnet to perform the internal
+validation, predict using the optimal lambda, and use get_glm_performance to obtain
+the performance from the models based on their predictions. I then add the performance
+metrics and confusion matrices to the appropriate data structres.
+
+-Alright cool, I'm done with my external resample (and by extension, my internal
+resample). I then take the full model list produced by the external resample,
+obtain the coefficients with get_cv_coefs, then I save their plots, take their absolute
+value, sort them, and select the top n features. 
+
+-I then down-select the global training and testing sets so only these top features remain.
+-Next, I create formula, use that to make glmnet matrices, then cross-validate a model
+using the global training data. Finally, I predict the test set and get the performance
+using get_glm_performance. All that's left is to add the performance of that iteration
+to global_perf_df, then add the confusion matrices, and the global models.
+
+-Now I'm done with my global resample, and my number of repeats, and all that's left
+to do is add an average to the performances, get the standard deviation, and add the 
+iteration numbers.
+    
+
+
+

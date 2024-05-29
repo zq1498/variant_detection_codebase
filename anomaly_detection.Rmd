@@ -1,0 +1,18 @@
+---
+title: "Anomaly Detection"
+output: html_document
+date: "2024-01-25"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(anomalize)
+library(e1071)
+```
+
+
+```{r}
+data = read.csv("Embedded_FS/combined_augmented_data.csv")
+
+```
+

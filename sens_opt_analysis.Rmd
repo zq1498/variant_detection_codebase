@@ -1,0 +1,189 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-02-06"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(embed)
+```
+
+```{r}
+sens_opt_df = read.csv('data/processed_sensitivity_opt_data.csv')
+sens_opt_df = sens_opt_df %>% mutate(across(starts_with("cAb"), log10)) 
+sens_opt_df$label = gsub("^(.*?)_", "", sens_opt_df$label, perl=T)
+sens_opt_df_list = split(sens_opt_df %>% select(-c(replicate)), sens_opt_df$label)
+sens_opt_df
+```
+
+```{r warning=FALSE}
+DR_Viz = function(dataset){
+  std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
+  
+  dataset %>% select(-label) %>% 
+  pivot_longer(cols = -c(target_vector, Conc.),
+                   names_to = 'pairs',
+                   values_to = 'fluorescence') %>% 
+  group_by(Conc., target_vector, pairs) %>%
+  summarise(average_fluorescence = mean(fluorescence),
+            se = std.err(fluorescence)) %>% 
+  ggplot(aes(x=Conc., y=average_fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  labs(title = paste0(dataset$label, " Dose Response"),
+       x = 'Spike Protein Concentration (ng/mL)',
+       y = "Log(Fluorescence) (A.U.)")+
+  geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(0,5))+
+  scale_x_log10() +
+  theme_classic()
+}
+lapply(sens_opt_df_list, DR_Viz)
+```
+```{r}
+combined_augment_data = read.csv("Embedded_FS/combined_augmented_data.csv")
+combined_augment_data = combined_augment_data %>% select(-c(Replicate, cAb13))
+condition_label = sens_opt_df$label
+sens_opt_df = sens_opt_df %>% select(-c(label, replicate))
+condition_plus_target = paste0(sens_opt_df$target_vector, "_", condition_label)
+condition_plus_target
+
+# Because I'm not sure if UMAP can be precomputed then applied to a test set
+# a quick fix
+
+# UMAP visualization
+umap_rec = recipe(~., data = combined_augment_data %>% filter(Conc. >= 0.01 & Conc. <= 25)) %>% 
+  update_role(c(Conc., target_vector), new_role = "id") %>% 
+  step_normalize(all_predictors()) %>% 
+  step_umap(all_predictors())
+
+umap_prep = prep(umap_rec)
+
+# Here I construct the UMAP embedding by first training on the augmented data, then
+# "predicting" on the new data. NOTE: I construct the manifold representation
+# with ALL variants, then just filter out WT and Beta to make the visualization less cluttered
+bake(umap_prep, new_data = NULL) %>% 
+  filter(target_vector == "Beta" | target_vector == "WT") %>% 
+  ggplot(aes(UMAP1, UMAP2, label = round(Conc., 3)))+
+  geom_point(aes(color = target_vector))+
+  geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans")
+
+bake(umap_prep, new_data = sens_opt_df) %>% 
+  ggplot(aes(UMAP1, UMAP2, label = Conc.))+
+  geom_point(aes(color = condition_label))+
+  geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans")
+
+bake(umap_prep, new_data = sens_opt_df) %>% 
+  ggplot(aes(UMAP1, UMAP2, alpha = Conc., label = target_vector))+
+  geom_point(aes(color = condition_label))+
+  geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans")
+
+# To compute this represenation, I include the new data when constructing the intial embedding
+sens_opt_combined_data = sens_opt_df
+sens_opt_combined_data$target_vector = condition_plus_target
+sens_opt_combined_data = bind_rows(sens_opt_combined_data, combined_augment_data) %>% 
+  filter(Conc. >= 0.01 & Conc. <= 125)
+
+umap_rec_combined = recipe(~., data = sens_opt_combined_data) %>% 
+  update_role(c(Conc., target_vector), new_role = "id") %>% 
+  step_normalize(all_predictors()) %>% 
+  step_umap(all_predictors())
+
+umap_prep_combined = prep(umap_rec_combined)
+
+# Here I construct the UMAP embedding by first training on the augmented data, then
+# "predicting" on the new data. NOTE: I construct the manifold representation
+# with ALL variants, then just filter out WT and Beta to make the visualization less cluttered
+combined_umap_test = bake(umap_prep_combined, new_data = NULL) %>% 
+  filter(target_vector != "Omicron" & target_vector != "Delta") 
+
+beta_combined_umap_test = combined_umap_test %>% filter(str_detect(target_vector, "Beta"))
+WT_combined_umap_test = combined_umap_test %>% filter(str_detect(target_vector, "WT"))
+beta_combined_umap_test %>% 
+  ggplot(aes(UMAP1, UMAP2, label = round(Conc., 3)))+
+  geom_point(aes(color = target_vector))+
+  geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()
+
+WT_combined_umap_test %>% 
+  ggplot(aes(UMAP1, UMAP2, alpha = round(Conc., 3)))+
+  geom_point(aes(color = target_vector))+
+  geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()
+
+
+```
+
+```{r}
+# Train models with combined augmented data, then test using the different condition test sets
+train_data = combined_augment_data %>% filter(Conc. >= 0.01)
+train_data$label = paste0(train_data$target_vector, "_Augment")
+
+combined_sensitivity_opt = sens_opt_df
+combined_sensitivity_opt$label = sens_opt_df$label
+test_data = combined_sensitivity_opt
+
+# Preprocessing - normalize, update Conc. and target_vector role, perform a UMAP decomposition, and 
+preproc_rec = recipe(target_vector~., data = train_data) %>% 
+  update_role(Conc., label, new_role = "id") %>% 
+  step_normalize(all_predictors()) # %>% 
+  # step_umap(all_predictors(),
+  #           neighbors = 20,
+  #           num_comp = 3)
+
+rand_forest_mod = rand_forest(
+  mtry = tune(),
+  trees = 1000,
+  min_n = tune()
+) %>% 
+  set_engine('ranger') %>% 
+  set_mode('classification')
+
+# mtry is a parameter estimated based on the training data, so we need to extract the parameter set and finalize using the training data
+rf_param_set = extract_parameter_set_dials(rand_forest_mod) %>% 
+  finalize(train_data %>% select(starts_with("cAb")))
+
+rf_grid = grid_regular(rf_param_set,
+                       levels = 5)
+train_folds = vfold_cv(train_data, repeats = 2, strata = target_vector)
+
+rand_workflow = workflow() %>% 
+  add_model(rand_forest_mod) %>% 
+  add_recipe(preproc_rec)
+
+# Add hyperparameter tuning step and repeat with radial SVM
+# Need to tune parameters
+
+rand_fit = rand_workflow %>% 
+  tune_grid(resamples = train_folds,
+                grid = rf_grid,
+            control = control_resamples(save_pred = TRUE, extract = extract_fit_engine))
+
+collect_predictions(rand_fit, summarize = TRUE) %>% arrange(.row) %>% select(-.config)
+collect_metrics(rand_fit)
+best_tree_acc = select_best(rand_fit, metric = "accuracy")
+show_best(rand_fit, metric = "roc_auc")
+best_tree_acc
+
+last_rf_mod = rand_forest(mtry = 3, min_n = 11, trees = 1000) %>% 
+  set_engine("ranger", importance('impurity')) %>% 
+  set_mode("classification")
+
+final_rf_wf = rand_workflow %>% update_model(last_rf_mod)
+
+# Last fit 
+last_rf_fit = final_rf_wf %>% 
+  fit()
+
+fitted_pred = predict(final_rf_wf, test_data)
+accuracy(fitted_pred$.pred_class, test_data$target_vector)
+sum(fitted_pred$.pred_class == test_data$target_vector) # 36.3% acc (lower than if UMAP representation is not used)
+
+# Need to calculate the accuracy from the test set
+```
+

@@ -1,0 +1,197 @@
+```{r setup, include=FALSE}
+library(tidymodels)
+library(doParallel)
+library(outliers)
+library(stringr)
+library(isotree)
+library(gmodels)
+library(embed)
+library(ggbeeswarm)
+# source("outlier_handling_functions.R")
+```
+
+```{r}
+combined_augmented_median_data = read.csv("dab18_combined_augment_outlier_removed_median_subtracted.csv")
+combined_augmented_median_data = combined_augmented_median_data %>% select(-cAb13) %>% mutate(across(target_vector, as.factor))
+
+combined_augmented_mean_data = read.csv("dab18_combined_augment_outlier_removed_median_subtracted.csv")
+combined_augmented_mean_data = combined_augmented_mean_data %>% select(-cAb13) %>% mutate(across(target_vector, as.factor))
+
+og_combined_augmented_data = read.csv("combined_augmented_data.csv")
+
+kh_clinical_data = read.csv('kh_clinical_processed.csv')
+# For ease of use just changing sample ID to concentration
+kh_clinical_data = kh_clinical_data %>% rename(Conc. = SampleID)
+```
+
+```{r}
+# What I need is a ratio
+# First we can try the ratio from the original paper
+# To avoid division errors I'm just going to add 1 to all values, we can decide later if this is problematic lol but I dont think it is
+ratio_df = combined_augmented_mean_data %>% filter(Conc. > 0.01)
+ratio_df_ids = ratio_df %>% select(c(target_vector, Conc., Replicate))
+ratio_df_fluorescence = ratio_df %>% select(starts_with("cAb"))
+ratio_df_fluorescence = data.frame(lapply(ratio_df_fluorescence, function(x) {return (x+1)}))
+
+ratio_df_p1 = bind_cols(ratio_df_ids, ratio_df_fluorescence)
+
+ratio_df_p1 = ratio_df_p1 %>% 
+  mutate(abs25.26 = cAb25/cAb26,
+         abs26.25 = cAb26/cAb25,
+         abs25.20 = cAb25/cAb20,
+         abs20.25 = cAb20/cAb25,
+         abs25.7 = cAb25/cAb7,
+         abs7.25 = cAb7/cAb25,
+         abs9.20 = cAb9/cAb20,
+         abs20.9 = cAb20/cAb9,
+         abs9.21 = cAb9/cAb21,
+         abs10.21 = cAb10/cAb21,
+         abs21.10 = cAb21/cAb10,
+         abs15.10 = cAb15/cAb10,
+         abs10.15 = cAb10/cAb15,
+         abs82 = cAb8^2,
+         abs152 = cAb15^2,
+         abs102 = cAb10^2)
+
+ratio_df_p1 %>% select(-starts_with("cAb")) %>% 
+  pivot_longer(cols = -c(target_vector, Conc., Replicate),
+               names_to = 'antibody_ratio',
+               values_to = 'ratio_value') %>% 
+  mutate(across(antibody_ratio, as.factor)) %>% 
+  ggplot(aes(x=target_vector, y=ratio_value))+
+  geom_beeswarm(aes(color = Conc.))+
+  facet_wrap(facets = 'antibody_ratio',
+             scales = 'free')
+
+ratio_df_p1 %>% select(-starts_with("cAb")) %>% 
+  filter(Conc. > 1) %>% 
+  pivot_longer(cols = -c(target_vector, Conc., Replicate),
+               names_to = 'antibody_ratio',
+               values_to = 'ratio_value') %>% 
+  mutate(across(antibody_ratio, as.factor)) %>% 
+  ggplot(aes(x=target_vector, y=ratio_value))+
+  geom_beeswarm(aes(color = Conc.))+
+  facet_wrap(facets = 'antibody_ratio',
+             scales = 'free')
+
+ratio_df_p1 %>% select(-starts_with("cAb")) %>% 
+  filter(Conc. > 10) %>% 
+  pivot_longer(cols = -c(target_vector, Conc., Replicate),
+               names_to = 'antibody_ratio',
+               values_to = 'ratio_value') %>% 
+  mutate(across(antibody_ratio, as.factor)) %>% 
+  ggplot(aes(x=target_vector, y=ratio_value))+
+  geom_beeswarm(aes(color = Conc.))+
+  facet_wrap(facets = 'antibody_ratio',
+             scales = 'free')
+
+ratio_clinical_df = kh_clinical_data %>% filter(Conc. > 0.01)
+ratio_clinical_df_ids = ratio_clinical_df %>% select(c(target_vector, Conc., Replicate))
+ratio_clinical_df_fluorescence = ratio_clinical_df %>% select(starts_with("cAb"))
+ratio_clinical_df_fluorescence = data.frame(lapply(ratio_clinical_df_fluorescence, function(x) {return (x+1)}))
+
+ratio_clinical_df_p1 = bind_cols(ratio_clinical_df_ids, ratio_clinical_df_fluorescence)
+
+ratio_clinical_df_p1 = ratio_clinical_df_p1 %>% 
+  mutate(abs25.26 = cAb25/cAb26,
+         abs26.25 = cAb26/cAb25,
+         abs25.20 = cAb25/cAb20,
+         abs20.25 = cAb20/cAb25,
+         abs25.7 = cAb25/cAb7,
+         abs7.25 = cAb7/cAb25,
+         abs9.20 = cAb9/cAb20,
+         abs20.9 = cAb20/cAb9,
+         abs9.21 = cAb9/cAb21,
+         abs10.21 = cAb10/cAb21,
+         abs21.10 = cAb21/cAb10,
+         abs15.10 = cAb15/cAb10,
+         abs10.15 = cAb10/cAb15,
+         abs82 = cAb8^2,
+         abs152 = cAb15^2,
+         abs102 = cAb10^2)
+```
+
+```{r}
+umap_viz(ratio_df_p1 %>% select(-starts_with("cAb")))
+umap_viz(combined_augmented_median_data)
+umap_viz(kh_clinical_data %>% bind_rows(combined_augmented_median_data))
+umap_viz(ratio_clinical_df_p1 %>% bind_rows(ratio_df_p1))
+```
+
+```{r warning=FALSE}
+combined_augmented_data
+umap_viz = function(dataset,
+                    plot_title = 'umap_plot'){
+  # umap_param_grid = grid_latin_hypercube(
+  #   n_neighbors = 
+  #   min_dist = 
+  #   n_components = 
+  #   metric = 
+  # )
+  # 
+  # umap_subplots = list()
+  dataset = dataset %>% select(-c(Replicate)) %>% mutate(across(Conc., round, 3))
+  
+  umap_rec = recipe( ~ ., data = dataset) %>% 
+    update_role(Conc., target_vector, new_role = "id") %>% 
+    step_zv() %>% 
+    step_normalize(all_predictors()) %>% 
+    step_umap(all_predictors(), 
+              num_comp = 2,
+              neighbors = 15,
+              min_dist = 0.1) %>% 
+    prep()
+  
+  umap_embedding = juice(umap_rec)
+  
+  umap_embedding_plot = umap_embedding %>% 
+    ggplot(aes(UMAP1, UMAP2, label = Conc.)) + 
+    geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
+    geom_text(check_overlap = T, hjust = "inward", family = "IBMPlexSans") +
+    labs(color = NULL,
+         title = plot_title)
+  
+  print(umap_embedding_plot)
+  
+}
+```
+```{r}
+umap_viz(og_combined_augmented_data, plot_title = "UMAP Projection of Original Data, No threshold")
+umap_viz(combined_augmented_median_data, plot_title = "UMAP Projection of OR, median-subtracted Data, No threshold")
+umap_viz(ratio_df_p1, plot_title = "UMAP Projection of OR, Median-subtracted Data with Ratios, No threshold")
+
+umap_viz(og_combined_augmented_data %>% filter(Conc. > 0.1), plot_title = "UMAP Projection of Original Data, 0.1 ng/ml threshold")
+umap_viz(combined_augmented_median_data %>% filter(Conc. > 0.1), plot_title = "UMAP Projection of OR, median-subtracted Data, 0.1 ng/ml threshold")
+umap_viz(ratio_df_p1 %>% filter(Conc. > 0.1), plot_title = "UMAP Projection of OR, Median-subtracted Data with Ratios, 0.1 ng/ml threshold")
+umap_viz(ratio_df_p1 %>% select(-starts_with("cAb")) %>% filter(Conc. > 0.1), plot_title = "UMAP Projection of OR, Median-subtracted Data Only Ratios, 0.1 ng/ml threshold")
+
+umap_viz(og_combined_augmented_data %>% filter(Conc. > 0.9), plot_title = "UMAP Projection of Original Data, 0.9 ng/ml threshold")
+umap_viz(combined_augmented_median_data %>% filter(Conc. > 0.9), plot_title = "UMAP Projection of OR, median-subtracted Data, 0.9 ng/ml threshold")
+umap_viz(ratio_df_p1 %>% filter(Conc. > 0.9), plot_title = "UMAP Projection of OR, Median-subtracted Data with Ratios, 0.9 ng/ml threshold")
+umap_viz(ratio_df_p1 %>% select(-starts_with("cAb")) %>% filter(Conc. > 0.9), plot_title = "UMAP Projection of OR, Median-subtracted Data Only Ratios, 0.9 ng/ml threshold")
+```
+
+```{r}
+umap_viz(combined_augmented_data)
+# umap_viz(dab18_combined_augment_processed)
+# umap_viz(og_combined_augmented_data)
+umap_viz(ratio_df_p1 %>% select(-c(abs10.21, abs25.20, abs25.26, abs25.7, abs9.20, abs9.21)))
+
+umap_viz(combined_augmented_data %>% filter(Conc. > 0.1) %>% filter(Conc. < 251)) 
+# umap_viz(dab18_combined_augment_processed %>% filter(Conc. > 0.1) %>% filter(Conc. < 251)) 
+# umap_viz(og_combined_augmented_data %>% filter(Conc. > 0.1) %>% filter(Conc. < 251)) 
+umap_viz(ratio_df_p1 %>% filter(Conc. > 0.1) %>% select(-c(abs10.21, abs25.20, abs25.26, abs25.7, abs9.20, abs9.21))) 
+umap_viz(ratio_df_p1 %>% filter(Conc. > 0.1) %>% select(-starts_with('abs')) %>% bind_cols(ratio_df_p1$abs7.25, ratio_df_p1$abs26.25, ratio_df_p1$abs21.10)) 
+
+umap_viz(combined_augmented_data %>% filter(Conc. > 1) %>% filter(Conc. < 251)) 
+# umap_viz(og_combined_augmented_data %>% filter(Conc. > 1) %>% filter(Conc. < 251))
+# umap_viz(dab18_combined_augment_processed %>% filter(Conc. > 1))
+umap_viz(ratio_df_p1 %>% filter(Conc. > 1) %>% select(-c(abs10.21, abs25.20, abs25.26, abs25.7, abs9.20, abs9.21)))
+umap_viz(ratio_df_p1 %>% select(-starts_with('abs')) %>% bind_cols(ratio_df_p1$abs7.25, ratio_df_p1$abs26.25) %>% filter(Conc. > 1))
+```
+
+
+```{r}
+# Write a function that trains a random forest model, then calculates variable importance of ratios
+```
+
