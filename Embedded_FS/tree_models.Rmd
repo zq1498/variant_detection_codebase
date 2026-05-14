@@ -168,7 +168,13 @@ for (coef_df in all_coef_results){
   coef_viz = rf_coef_visualization(coef_df)
   print(coef_viz)
 }
+rf_coef_visualization(all_coef_results[[11]])
+ggsave("rf_coef_plot.png", device = 'png', dpi = 1000,
+       height = 5, width = 10, units = 'in')
 
+rf_performance_plotter(all_perf_results[[11]])
+ggsave("rf_performance_by_features.png", device = 'png', dpi = 1000,
+       height = 5, width = 10, units = 'in')
 save_metrics(split_dab_df_list, 'global_performance', all_models)
 save_metrics(split_dab_df_list, 'global_coef_df', all_models)
 # dab_ind = 1

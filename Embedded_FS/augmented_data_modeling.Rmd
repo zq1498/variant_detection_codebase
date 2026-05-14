@@ -5,7 +5,9 @@ date: "2023-08-09"
 ---
 
 ```{r setup, include=FALSE}
-library(tidyverse)
+library(tidymodels)
+library(embed)
+library(tidytext)
 library(caret)
 library(ranger)
 library(ggplot2)
@@ -16,8 +18,6 @@ library(MLmetrics)
 library(outliers)
 library(gdata) # Not loaded
 library(synthpop)# Not loaded
-library(xgboost) # Not loaded
-library(factoextra)
 library(recipes)
 source("outlier_handling_functions.R")
 ```
@@ -61,27 +61,41 @@ augmented_18_data_2 %>% filter(Conc. == 7.8125)%>% select(starts_with(c("target_
   geom_boxplot()+
   facet_wrap("cab")
 ```
-```{r}
-graph_data = data.frame(Accuracy = c(71.9, 88.3, 99.7, 98.3, 93.4, 100, 95.6, 100, 97.5),
-                        Concentration = c(0.98, 1.95, 3.90, 7.81, 15.63, 31.25, 62.50, 125, 250))
-ggplot(graph_data, aes(x=Concentration, y=Accuracy))+
-  geom_bar(stat = 'identity',
-             fill = '#1D6363') +
-    geom_text(aes(label = Accuracy),
-              vjust  = 1.5,
-              color = 'white') +
-  theme_classic() +
-    ylab('Percent Correct') +
-    xlab('Concentration') +
-  scale_x_log10(minor_breaks = rep(1:9, 4)*(10^rep(0:3, each = 9)))
 
+```{r}
+# Testing group_vfold_cv
+combined_augmented_data
+combined_threshold_data = combined_augmented_data %>% filter(Conc. != 0)
+
+combined_threshold_data$Conc. = as.factor(combined_threshold_data$Conc.)
+
+
+
+split_test = group_vfold_cv(combined_threshold_data, group = Conc., strata = target_vector,
+                            v=1)
+combined_threshold_data
+combined_threshold_data %>% group_by(target_vector, Replicate) %>% summarise(n = n())
 ```
+
 
 ```{r ALL THE MOST UP TO DATE OUTLIER HANDLING FUNCTIONS}
 # Provided a dataset, this function can identify which values are outliers based
 # on the distributions of values with the same concentration and variant. I then
 # provides a data frame that contains relevant information about identified
 # outliers that can be used to find and replace that outlier later on
+
+# REMEMBER: outlier imputation should be done FOLLOWING data splitting (i.e. via
+# )
+
+#' check_outliers
+#'
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration 
+#' @param alpha p-value (derived from a grubb's test) below which outleirs should be removed 
+#'
+#' @return flag_df, a data frame containing 
+#' @export
+#'
+#' @examples
 check_outliers = function(dataset, alpha = 0.05) {
   flag_df = NULL
   current_variant = unique(dataset$target_vector)
@@ -91,10 +105,11 @@ check_outliers = function(dataset, alpha = 0.05) {
   cab_names = colnames(cols_to_check)
   col_num = 1
   
-  # Adapting function to replace grubbs.test. Basically, I need to set a p-value
+  
+  # Outlier detection with 3*sd (tukey fence) instead of grubbs test. A manual set a p-value
   # to 0.01 if a value within the array is higher or lower than 3D*mean, then
-  # return 'higher' or 'lower' depending on what value (probably need to choose the
-  # value with the greatest distance from the mean so I don't get two returns)
+  # return 'higher' or 'lower' depending on what value is returned
+  # TO DO: This should probably be a separate function that's called elsewhere
   # for (array in cols_to_check){
   #   arr_mean = mean(array, na.rm=T)
   #   arr_sd = sd(array, na.rm = T)
@@ -169,6 +184,15 @@ check_outliers = function(dataset, alpha = 0.05) {
 }
 
 # Provided with a data frame containing information about individual outliers (called flag_df here), it will find those outlier values and add additional information to the original flag_df, mainly the specific outlier value and the mean of the group without the outlier included
+#' Title
+#'
+#' @param flag_df 
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration
+#'
+#' @return
+#' @export
+#'
+#' @examples
 enhance_flag_df = function(flag_df, dataset){
   # Loop over all rows of flag df, then build an array row by row that contains
   # the max and mean (na.rm = T), then add that to the original data frame and 
@@ -222,6 +246,16 @@ enhance_flag_df = function(flag_df, dataset){
 # all outlier values and replace them with the mean value or NA if you'd like to
 # use an alternative imputation method. It returns a dataset of the same
 # dimensions as the original, with the outlier values changed.
+#' Title
+#'
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration
+#' @param enhanced_flag_df 
+#' @param impute_method 
+#'
+#' @return
+#' @export
+#'
+#' @examples
 replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
   row_numbers = 1:nrow(dataset)
   dataset = bind_cols("row_number" = row_numbers, dataset)
@@ -265,7 +299,18 @@ replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
 
 #------------------------------------------------------------------------------#
 # Outlier control function
+#' main_outliers_detection_function: main wrapper function for all outlier detection
+#' functions. Calls check_outliers, enhance_flag_df, and replace_outliers
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration
+#' @param threshold p-value (from a grubb's test) below which outliers should be considered a statistical outlier 
+#' @param impute imputations method to use, currently supports mean imputation 
+#'
+#' @return
+#' @export
+#'
+#' @examples
 main_outliers_detection_function = function(dataset, threshold, impute = 'mean') {
+  
   outlier_test_df_list = dataset %>% filter(Conc. > threshold) %>% group_by(Conc., target_vector) %>% group_split()
   flag_df = NULL
   
@@ -300,144 +345,6 @@ outlier_removed_aug3 = main_outliers_detection_function(augmented_18_data_3, 0.1
 
 ```
 
-```{r}
-# Using KNN imputation - doesn't make a huge difference in how the DRs look
-# That said, for thresh - 0.9, knn imputation seems to massively stabilize rf results (no _conc)
-na_test = main_outliers_detection_function(combined_augmented_data, 0.1, impute='na')
-na_test = na_test %>% select(-Replicate)
-
-
-knn_impute_train = na_test[complete.cases(na_test),]
-knn_impute_train
-knn_impute_test = na_test[!complete.cases(na_test),]
-knn_impute_test
-
-
-# Imputing with concentration known
-impute_rec_conc = recipe(
-  paste("target_vector", '~', ".") %>% as.formula(),
-  data = knn_impute_train
-)
-
-knn_conc_impute = impute_rec_conc %>% 
-  step_impute_knn(all_predictors(), neighbors=5)
-
-knn_conc_impute_prep = prep(knn_conc_impute, training = knn_impute_train)
-
-knn_conc_imputed = bake(knn_conc_impute_prep, knn_impute_test) 
-
-knn_conc_imputed_full = bind_rows(knn_impute_train, knn_conc_imputed) %>% bind_cols("Replicate" = combined_augmented_data$Replicate)
-
-
-# Imputing without knowing conc
-knn_impute_no_conc = knn_impute_train %>% select(-Conc.)
-knn_test_no_conc = knn_impute_test %>% select(-Conc.)
-
-impute_rec_no_conc = recipe(
-  paste("target_vector", '~', ".") %>% as.formula(),
-  data = knn_impute_train
-) %>% step_rm(removals = 'Conc.')
-
-knn_no_conc_impute = impute_rec_no_conc %>% 
-  step_impute_knn(all_predictors(), neighbors=5) %>% 
-  prep(training = knn_impute_train) %>% 
-  bake(knn_impute_test)
-knn_no_conc_impute
-knn_no_conc_impute_full = bind_rows(knn_impute_train, knn_no_conc_impute) %>% bind_cols("Replicate" = combined_augmented_data$Replicate)
-knn_no_conc_impute_full
-
-knn_impute_train
-DR_Viz(outlier_removed_df)
-DR_Viz(knn_conc_imputed_full)
-DR_Viz(knn_no_conc_impute_full)
-
-
-knn_conc_impute_rf = augmented_random_forest_model(dataset = knn_conc_imputed_full,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "rf",
-                              lower_thresh = 0.9,
-                              upper_thresh = 251)
-knn_conc_perc_correct_rf = percent_correct_visualization(knn_conc_impute_rf, "#1D6363")
-
-knn_conc_impute_svmR = augmented_random_forest_model(dataset = knn_conc_imputed_full,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "svmRadial",
-                              lower_thresh = 0.9,
-                              upper_thresh = 251)
-knn_conc_perc_correct_svmR = percent_correct_visualization(knn_conc_impute_svmR, "#1D6363")
-
-
-knn_conc_impute_qda = augmented_random_forest_model(dataset = knn_conc_imputed_full,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "qda",
-                              lower_thresh = 0.4,
-                              upper_thresh = 251)
-knn_no_conc_perc_correct_qda = percent_correct_visualization(knn_conc_impute_qda, "#1D6363")
-knn_conc_perc_correct_rf
-knn_conc_perc_correct_svmR
-knn_no_conc_perc_correct_qda
-
-# knn_no_conc_perc_correct_rf
-# knn_no_conc_perc_correct_svmR
-# knn_no_conc_perc_correct_qda
-
-# mean(c(.93,.85,.86,.85,.89, .89, .93,.821, .77,.89))
-```
-
-```{r}
-# Let's try to simulate some data split into train and test set
-# augment training set with additional data, then train an imputation model
-# remove conc from test set and attempt to impute.
-
-# Split into values greater than 0.4 and less than 4, then values greater than 5
-# train an RF, radSVM, and QDA model on the low conc and high conc values
-
-simulated_data = outlier_removed_df
-split_ind = createFolds(simulated_data$target_vector, k=5)
-test_reps = sim_test$Replicate
-train_reps = sim_train$Replicate
-
-simulated_data = simulated_data %>% select(-Replicate)
-
-for(fold in 1){
-  sim_train = simulated_data[-split_ind[[fold]],]
-  sim_test = simulated_data[split_ind[[fold]],]
-  print(sim_test)
-  original_concs = sim_test$Conc.
-  sim_test$Conc. = NA %>% as.double()
-  print(sim_test)
-  # Now take training_data and train a kNN imputation model for conc.
-  conc_impute = recipe(
-    paste("`Conc.`", '~', ".") %>% as.formula(),
-    data = sim_train
-  )
-  
-  test_conc_impute = conc_impute %>% step_impute_knn(all_predictors(), neighbors = 5)
-  test_conc_impute_prep = prep(test_conc_impute, training = sim_train)
-  test_imputed_conc = bake(object=test_conc_impute_prep, new_data=sim_test)
-  print(identical(sim_test$Conc., test_imputed_conc$Conc.))
-  # test_conc_impute = conc_impute %>% 
-  #   step_impute_knn(all_predictors(), neighbors=3) %>% 
-  #   prep(training = sim_train) %>% 
-  #   bake(sim_test)
-  print(formula(test_conc_impute_prep))
-  print(test_imputed_conc)
-  # low_conc = test_imputed_conc %>% filter(Conc. < 4)
-  # high_conc = test_imputed_conc %>% filter(Conc. > 4)
-  # conc_err = RMSE(test_imputed_conc$Conc., original_concs)
-  # print(low_conc)
-  # print(high_conc)
-  # print(conc_err)
-}
-test_imputed_conc
-conc_impute$var_info
-test_conc_impute$var_info
-```
-
-
 ```{r Dose respons visualization}
 DR_Viz = function(dataset){
   std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
@@ -468,6 +375,7 @@ DR_Viz(augmented_18_data_1)
 DR_Viz(augmented_18_data_2)
 DR_Viz(combined_augmented_data)
 DR_Viz(outlier_removed_df)
+DR_viz(sens_opt_df)
 ```
 
 ```{r PERCENT CORRECT VISUALIZATION}
@@ -494,6 +402,67 @@ percent_correct_visualization = function(dataset, color){
 }
 ```
 
+```{r}
+# PCA and UMAP
+pca_rec = recipe(~ ., data = combined_augmented_data) %>% 
+  update_role(Replicate, Conc., target_vector, new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_knn(all_predictors(), neighbors = 3) %>% 
+  step_pca(all_predictors())
+
+pca_prep = prep(pca_rec)
+pca_prep
+tidied_pca = tidy(pca_prep, 3)
+tidied_pca
+
+tidied_pca %>% 
+  filter(component %in% paste0("PC", 1:5)) %>% 
+  mutate(component = fct_inorder(component)) %>% 
+  ggplot(aes(value, terms, fill = terms)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~component, nrow = 1) +
+  labs(y = NULL)
+
+tidied_pca %>%
+  filter(component %in% paste0("PC", 1:4)) %>%
+  group_by(component) %>%
+  top_n(8, abs(value)) %>%
+  ungroup() %>%
+  mutate(terms = reorder_within(terms, abs(value), component)) %>%
+  ggplot(aes(abs(value), terms, fill = value > 0)) +
+  geom_col() +
+  facet_wrap(~component, scales = "free_y") +
+  scale_y_reordered() +
+  labs(
+    x = "Absolute value of contribution",
+    y = NULL, fill = "Positive?"
+  )
+
+juice(pca_prep) %>% 
+  ggplot(aes(PC1, PC3, label = target_vector))+
+  geom_point(aes(color = target_vector), alpha = 0.7, size = 2) + 
+  # geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
+  labs(color = NULL)
+```
+
+```{r}
+# UMAP clustering
+umap_rec <- recipe(~., data = combined_augmented_data) %>%
+  update_role(Replicate, Conc., target_vector, new_role = 'id') %>% 
+  step_normalize(all_predictors()) %>% 
+  step_impute_knn(all_predictors(), neighbors = 3) %>% 
+  step_umap(all_predictors())
+
+umap_prep <- prep(umap_rec)
+
+juice(umap_prep) %>%
+  ggplot(aes(UMAP1, UMAP2, label = target_vector)) +
+  geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
+  geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
+  labs(color = NULL)
+```
+
+
 
 ```{r model training}
 # Random forest model - dAb18
@@ -505,7 +474,7 @@ augmented_random_forest_model = function(dataset,
                                          upper_thresh=245){
   pred_concs = NULL
   
-  # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
+  # Thresholding around 1 ng/ml - corresponds to a threshold of ~20 pM
   dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh) %>% select(-Replicate, -cAb10)
   folds = createFolds(dataset[[target]], k = k_folds)
   train_control = trainControl(method = "repeatedcv",
@@ -693,114 +662,6 @@ percent_correct_visualization(outlier_removed_qda, '#1D6363')
 percent_correct_visualization(outlier_removed_rf_high, '#1D6363')
 
 ```
-```{r}
-# QDA results
-
-mean(0.88,
-0.7692308,
-0.9166667,
-0.7916667,
-0.96,
-0.76,
-0.9583333,
-0.8846154,
-0.9166667,
-0.88)
-
-sd(c(0.88,
-0.7692308,
-0.9166667,
-0.7916667,
-0.96,
-0.76,
-0.9583333,
-0.8846154,
-0.9166667,
-0.88))
-
-
-mean(0.8461538,
- 0.9230769,
- 0.9583333,
- 0.76,
- 0.88,
- 1,
- 0.9583333,
- 0.84,
- 0.8333333,
- 0.9166667)
-```
-
-
-
-```{r}
-graph_data_2 = data.frame(
-  Data = c(
-    'Combined',
-    'Second',
-    'First',
-    'Combined',
-    'Second',
-    'First',
-    'Combined',
-    'First',
-    'Second'
-  ),
-  Model = c(
-    'RF',
-    'Radial SVM',
-    'Radial SVM',
-    'Radial SVM',
-    'RF',
-    'RF',
-    'QDA',
-    'QDA',
-    'QDA'
-  ),
-  Accuracy = c(88.5,
-               87.1,
-               86.7,
-               89.8,
-               84.9,
-               82.4,
-               83.4,
-               80.9,
-               81.4),
-  SE = c(3.80,
-         7.54,
-         5.50,
-         5.40,
-         7.24,
-         7.40,
-         6.74,
-         10.07,
-         8.09)
-)
-graph_data_2$SE = graph_data_2$SE/sqrt(10)
-variant_acc_plot = ggplot(graph_data_2, aes(x=Model, y=Accuracy, fill=Data))+
-  geom_bar(position='dodge', stat='identity')+
-  geom_errorbar(aes(x=Model, ymin=Accuracy-SE, ymax=Accuracy+SE),
-                position=position_dodge(.9),
-                width=.2,
-                size=.8)+
-  geom_text(aes(label = Accuracy),
-              vjust  = 1.5,
-              color = 'white',
-            position=position_dodge(.9))+
-  scale_fill_manual(values=c('#608F8F', '#164A4A', '#0B2525'))+
-  scale_x_discrete(expand = c(0,0))+
-  scale_y_discrete(limits=c(0,20,40,60,80,100), expand = expansion(mult=c(0,0.1)))+
-  labs(title='Variant Prediction Accuracy by Model')+
-  theme_classic()+
-  theme(axis.text.x=element_text(size=12),
-        axis.text.y=element_text(size=12),
-        title = element_text(size=16))
-variant_acc_plot
-ggsave('Average_accuracy_by_variant_plot.png', variant_acc_plot, width = 9, height = 7)
-  
-# Adding this literally just to check changes
-  
-```
 
 ```{r}
 # So it's pretty clear that the combined data offers advantages over the individual data sets, and the outlier removed df looks the best of all
@@ -834,51 +695,8 @@ outlier_removed_perc_09ngml_correct_svm = outlier_removed_perc_correct_svm + lab
 ggsave("combined_augment_perc_correct_09ngml_svm.png", combined_augment_perc_correct_09ngml_svm)
 ggsave("outlier_removed_perc_09ngml_correct_svm.png", outlier_removed_perc_09ngml_correct_svm)
 ```
-```{r}
-# Same as above but with radial svm
-
-combined_augment_svm_rad = augmented_random_forest_model(dataset = combined_augmented_data,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "svmRadial")
-
-combined_augment_perc_correct_svm_rad = percent_correct_visualization(combined_augment_svm_rad, "#1D6363")
-
-outlier_removed_svm_rad = augmented_random_forest_model(dataset = outlier_removed_df,
-                              target = "target_vector",
-                              k_folds = 10,
-                              model_type = "svmRadial")
-
-outlier_removed_perc_correct_svm_rad = percent_correct_visualization(outlier_removed_svm_rad, "#1D6363")
-
-combined_augment_perc_correct_svm_rad
-outlier_removed_perc_correct_svm_rad
-
-combined_augment_perc_correct_04ngml_svm_rad = combined_augment_perc_correct_svm_rad +  labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-outlier_removed_perc_04ngml_correct_svm_rad = outlier_removed_perc_correct_svm_rad + labs(title='Combined set of augmented data - outliers imputed', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-combined_augment_perc_correct_04ngml_svm_rad
-outlier_removed_perc_04ngml_correct_svm_rad
-ggsave("combined_augment_perc_correct_04ngml_svm_rad.png", combined_augment_perc_correct_04ngml_svm_rad)
-ggsave("outlier_removed_perc_04ngml_correct_svm_rad.png", outlier_removed_perc_04ngml_correct_svm_rad)
-
-combined_augment_perc_correct_09ngml_svm_rad = combined_augment_perc_correct_svm_rad +  labs(title='Combined set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-outlier_removed_perc_09ngml_correct_svm_rad = outlier_removed_perc_correct_svm_rad + labs(title='Combined set of augmented data - outliers removed', subtitle = 'Conc. Threshold = 0.9 ng/ml; Radial SVM')
-
-ggsave("combined_augment_perc_correct_09ngml_svm_rad_2.png", combined_augment_perc_correct_04ngml_svm_rad)
-ggsave("outlier_removed_perc_09ngml_correct_svm_rad_2.png", outlier_removed_perc_04ngml_correct_svm_rad)
-```
-```{r}
-knn_impute = function(train_data, test_data, neighbors=5){
-  outlier_na_df = main_outliers_detection_function(dataset, 0.1, impute='na')
-```
 
 
-```{r}
-outlier_na_df = outlier_na_df %>% select(-Replicate)
-  
-  
-complete.cases(outlier_removed_df)
-```
 
 
 ```{r Augmented data}
@@ -1059,31 +877,38 @@ train_control = trainControl(method = "repeatedcv",
                              number = 5,
                              repeats = 3)
 fold=1
-xgb_params = list("objective"="multi:softprob",
-                  "eval_metric"='merror',
-                  'eta'=0.07,
-                  "sumsample"=0.9,
-                  "colsample_bytree"=0.8,
-                  "max_depth"=8)
 
+params = list(
+  objective = "multi:softmax",  # Multi-class classification with softmax
+  num_class = 4,                # Number of classes in the target variable
+  eval_metric = "mlogloss",     # Evaluation metric for multi-class
+  eta = 0.3,                    # Learning rate (shrinkage)
+  max_depth = 6,                # Maximum depth of trees
+  min_child_weight = 1,         # Minimum sum of instance weight needed in a child
+  subsample = 1,                # Fraction of samples used for training
+  colsample_bytree = 1,         # Fraction of features used for training in each tree
+  nrounds = 100                 # Number of boosting rounds (trees)
+)
   xgmodel_formula = paste("target_vector", '~', ".", "-Conc.") %>% as.formula()
   xgtrain = dataset[-folds[[fold]],]
   xgtest = dataset[folds[[fold]],]
-  
+  # xgtrain
+  # xgtest
   test_conc = xgtest$Conc.
   
   xgpreprocess = preProcess(xgtrain, method = c("center", "scale"))
   xgtrain = predict(xgpreprocess, xgtrain)
   xgtest = predict(xgpreprocess, xgtest)
+  xgtrain$'target_vector'
+  xgx_train = xgtrain %>% select(-target_vector, -Conc.)
+  xgy_train = xgtrain["target_vector"]
+  nobs(as.matrix(xgx_train))
   
-  xgx_train = xgtrain %>% select(-target_vector)
-  xgy_train = xgtrain[["target_vector"]]
-  xgx_train
-  xgy_train
-  xgx_test = xgtest %>% select(-target_vector)
-  xgy_test = xgtest[["target_vector"]]
+  xgx_test = xgtest %>% select(-target_vector, -Conc.)
+  xgy_test = xgtest["target_vector"]
   
-  xg.train = xgb.DMatrix(data.matrix(xgx_train), label=xgy_train)
+  x_train_matrix = sparse.model.matrix()
+  xg.train = xgb.DMatrix(data=xgx_train, label=xgy_train)
   xg.test = xgb.DMatrix(data.matrix(xgx_test), label=xgy_test)
   
   fit_xgb_cv = xgb.cv(params = xgb_params, data=xg.train, nrounds=120,
@@ -1102,7 +927,55 @@ xgb_params = list("objective"="multi:softprob",
   # 
   
 ```
+```{r}
+data(agaricus.train, package='xgboost')
+train <- agaricus.train
+train$data
+```
 
+```{r}
+# Load the Iris dataset
+data(iris)
+
+# Prepare the data
+X <- iris[, 1:4]   # Features
+y <- as.numeric(iris$Species) - 1  # Convert species labels to 0, 1, 2
+
+# Split the data into training and testing sets
+set.seed(123)
+train_indices <- sample(1:nrow(iris), 0.7 * nrow(iris))
+X_train <- X[train_indices, ]
+y_train <- y[train_indices]
+X_test <- X[-train_indices, ]
+y_test <- y[-train_indices]
+
+# Define XGBoost parameters for multi-class classification
+params <- list(
+  objective = "multi:softmax",  # Multi-class classification with softmax
+  num_class = 4,                # Number of classes in the target variable
+  eval_metric = "mlogloss",     # Evaluation metric for multi-class
+  eta = 0.3,                    # Learning rate (shrinkage)
+  max_depth = 6,                # Maximum depth of trees
+  min_child_weight = 1,         # Minimum sum of instance weight needed in a child
+  subsample = 1,                # Fraction of samples used for training
+  colsample_bytree = 1,         # Fraction of features used for training in each tree
+  nrounds = 100                 # Number of boosting rounds (trees)
+)
+
+# Convert data to DMatrix
+dtrain <- xgb.DMatrix(data = X_train, label = y_train)
+dtest <- xgb.DMatrix(data = X_test, label = y_test)
+
+# Train the XGBoost model
+xgb_model <- xgboost(params = params, data = dtrain, nrounds = params$nrounds)
+
+# Make predictions
+predictions <- predict(xgb_model, dtest)
+
+# Evaluate the model for multi-class classification
+accuracy <- mean(predictions == y_test)
+cat("Accuracy:", accuracy, "\n")
+```
 
 ```{r dab19 data handling}
 augmented_dab19_data = read.csv("augmented_dab19_data.csv")

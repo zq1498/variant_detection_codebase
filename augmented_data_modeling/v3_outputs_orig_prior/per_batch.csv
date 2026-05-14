@@ -1,0 +1,11 @@
+"scenario","batch","n","accuracy"
+"O+1: original prior + batch1","1",24,0.833333333333333
+"O+1: original prior + batch1","2",35,0.657142857142857
+"O+2: original prior + batch2","1",24,0.833333333333333
+"O+2: original prior + batch2","2",35,0.885714285714286
+"O+B: original prior + both batches","1",24,0.833333333333333
+"O+B: original prior + both batches","2",35,0.8
+"O: original only","1",24,0.208333333333333
+"O: original only","2",35,0.171428571428571
+"W+B: weak prior + both batches","1",24,0.833333333333333
+"W+B: weak prior + both batches","2",35,0.8

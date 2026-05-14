@@ -1,0 +1,178 @@
+---
+title: "variance_fs"
+output: html_document
+date: "2023-04-19"
+---
+
+```{r}
+library(tidyverse)
+library(caret)
+library(ggplot2)
+library(stats)
+library(psych)
+library(gmodels)
+library(gridExtra)
+library(doParallel)
+library(roxygen2)
+library(RColorBrewer)
+library(ggpubr)
+```
+
+```{r}
+# This file is within the Embedded_FS folder in the variant_detection_codebase
+# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
+# order to run in isolation, so I'm just setting the wd to the parent from which
+# I can call both files. The wd will be reset after this chunk anyway
+setwd("..")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+source("Embedded_FS/rf_accessory_functions.R")
+source("Embedded_FS/rf_resampling_function.R")
+split_dab_df_list = main_preprocessor()
+```
+
+```{r}
+test_df = split_dab_df_list[[10]] %>% select(-c(Conc., Replicates))
+test_df
+
+betweenGroupVariance = function(dataframe){
+  # dataframe provided to this function needs to contain the target_vector column
+  # and just the fluorescence values
+  group_means = dataframe %>% group_by(target_vector) %>% summarise(across(everything(), mean))
+  colMeans = dataframe %>% summarise(across(-target_vector, mean))
+  
+  num_cols = ncol(group_means)
+  
+  groupVariance = data.frame('target_vector' = group_means[1])
+  group_means = group_means %>% select(-target_vector)
+  
+  for (ind in 1:(num_cols-1)){
+    colVariance = (24 * (group_means[ind] - colMeans[[1]]) ^ 2)
+    groupVariance = groupVariance %>% bind_cols(colVariance)
+  }
+  
+  sumVariance = groupVariance %>% summarise(across(-target_vector, sum))
+  # sumVariance = colSums(groupVariance[2:num_cols])
+  sumVariance = sumVariance / 3
+  
+  return(sumVariance)
+}
+
+ssb = betweenGroupVariance(test_df)
+ssb
+```
+
+```{r}
+# Within group variance
+withinGroupVariance = function(dataframe){
+  # dataframe provided to this function needs to contain the target_vector column
+  # and just the fluorescence values
+  group_means = dataframe %>% group_by(target_vector) %>% summarise(across(everything(), mean))
+  labels = unique(dataframe$target_vector) 
+  global_dif_df = NULL
+  for (label in labels){
+    temp_dif_df = NULL
+    var_df = dataframe %>% filter(target_vector == labels)
+    label_group_means = group_means %>% filter(target_vector == label)
+    for (ind in 2:15){
+      dif = (var_df[ind] - label_group_means[[ind]])^2
+      if (is.null(temp_dif_df)){
+        temp_dif_df = dif
+      }
+      else{
+        temp_dif_df = bind_cols(temp_dif_df, dif)
+      }
+    }
+    if (is.null(global_dif_df)){
+      global_dif_df = temp_dif_df
+    }
+    else{
+      global_dif_df = bind_rows(global_dif_df, temp_dif_df)
+    }
+  }
+  global_dif_df
+  ssw = global_dif_df %>% summarise(across(everything(), sum))
+  return(ssw)
+}
+
+ssw = withinGroupVariance(test_df)
+
+f_ratio_df = (ssb / ssw) %>% pivot_longer(cols = everything(),
+                                          names_to = 'pairs',
+                                          values_to = 'f_ratio') %>%
+  arrange(across(f_ratio, desc)) %>%
+  mutate('normalized_f_ratio' = f_ratio / max(f_ratio))
+
+f_ratio_df
+
+```
+```{r warning=FALSE}
+# Preprocessing data for testing models with variance-based method
+variance_fs_function = function(dataframe){
+  fold_ind = createFolds(dataframe[['target_vector']], k=5)
+  for (fold in 1:5){
+    train_data = dataframe[-fold_ind[[fold]], ]
+    test_data = dataframe[fold_ind[[fold]],]
+    
+    # May add box-cox to this method
+    preProc = preProcess(train_data, method = c('center','scale'))
+    scale_train = predict(preProc, train_data)
+    scale_test = predict(preProc, test_data)
+    
+    # Subset training data by variance
+    ssb = betweenGroupVariance(scale_train)
+    ssw = withinGroupVariance(scale_test)
+    
+    f_ratio = (ssb / ssw) %>% pivot_longer(cols = everything(),
+                                          names_to = 'pairs',
+                                          values_to = 'f_ratio') %>%
+    arrange(across(f_ratio, desc)) %>%
+    mutate('normalized_f_ratio' = f_ratio / max(f_ratio))
+    
+    ranked_pairs_variance = f_ratio[['pairs']]
+    top_10 = ranked_pairs_variance[1:10]
+    top_5 = ranked_pairs_variance[1:5]
+
+    top_10_train = scale_train %>% select(c('target_vector', top_10))
+    top_5_train = scale_train %>% select(c('target_vector', top_5))
+    
+    top_10_test = scale_test %>% select(c('target_vector', top_10))
+    top_5_test = scale_test %>% select(c('target_vector', top_5))
+    
+    
+    train_control = trainControl('repeatedcv',
+                                 repeats = 3,
+                                 number = 3)
+    model_10 = train(target_vector~.,
+                  data = top_10_train,
+                  method = 'rf',
+                  tuneLength = 10)
+    
+    model_5 = train(target_vector~.,
+              data = top_5_train,
+              method = 'rf',
+              tuneLength = 10)
+    
+    print(model_10$results)
+    print(model_5$results)
+    
+    print(model_10$bestTune)
+    print(model_5$bestTune)
+    preds_10 = predict(model_10,
+                       newx=top_10_test)
+    
+    preds_5 = predict(model_5,
+                      newx=top_5_test)
+    
+    acc10 = Accuracy(preds_10, top_10_test[['target_vector']])
+    acc5 = Accuracy(preds_5, top_5_test[['target_vector']])
+    
+    print(acc10)
+    print(acc5)
+  }
+}
+var_test_df = test_df
+var_test_df
+variance_fs_function(test_df)
+```
+
+

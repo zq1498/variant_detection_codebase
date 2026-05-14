@@ -1,0 +1,450 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-03-20"
+---
+
+```{r setup, include=FALSE}
+library(tidymodels)
+library(doParallel)
+library(outliers)
+# source("outlier_handling_functions.R")
+```
+
+```{r}
+combined_augmented_data = read.csv("combined_augmented_data.csv")
+combined_augmented_data = combined_augmented_data %>% select(-cAb13)
+# Retain variant value, replace replicate value with a rowname column to identify
+# each sample. Color the final heatmap by the variant value and store prediction history
+# alongisde rowname
+fluorescence_sums = rowSums(combined_augmented_data %>% select(starts_with('cAb')))
+avg_fluorescence = rowMeans(combined_augmented_data %>% select(starts_with('cAb')))
+
+labled_augmented_data = combined_augmented_data %>% select(-Replicate) %>% 
+  mutate("SampleNum" = row.names(combined_augmented_data), .before = Conc.) %>% 
+  mutate(sum_fluorescence = fluorescence_sums)
+labled_augmented_data
+```
+
+
+```{r}
+augmented_modeling_function = function(dataset,
+                                       target,
+                                       k_folds,
+                                       model_type,
+                                       lower_thresh = 0,
+                                       upper_thresh = 251){
+  
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
+  concentrations = dataset$Conc.
+  
+  gen_rec = recipe(target_vector~., data = dataset) %>% 
+    update_role(SampleNum, Conc., new_role = 'id') %>% 
+    # step_umap(neighbors = 30, keep_original_cols = T)
+    # step_BoxCox(all_predictors()) %>% 
+    step_normalize(all_predictors())
+
+  folds = vfold_cv(dataset, v=10, repeats = 2, strata = target_vector)
+  
+  if (model_type == 'rbf_svm'){
+    mod = svm_rbf(cost = tune(), rbf_sigma = tune()) %>% 
+    set_mode('classification') %>% 
+    set_engine('kernlab')
+    
+    # params = extract_parameter_dials(mod)
+  }
+  
+  if (model_type == 'rf'){
+    mod = rand_forest(trees = 5000, mtry = tune(), min_n = tune()) %>% 
+      set_mode('classification') %>% 
+      set_engine('ranger')
+    
+    print(mod %>% extract_parameter_set_dials())
+    # params = parameters(
+    #   min_n(),
+    #   finalize(mtry(), select(dataset, -target_vector))
+    # )
+  }
+  
+  resample_results = mod %>% 
+      tune_grid(
+        gen_rec,
+        resamples = folds,
+        # grid = params,
+        control = control_grid(save_pred = TRUE)
+      )
+  
+  metrics = collect_metrics(resample_results)
+  print(metrics)
+  return(list("resample_results" = resample_results,
+              "concentrations" = concentrations))
+}
+
+
+rf_model_results = augmented_modeling_function(labled_augmented_data,
+                            target = "target_vector",
+                            k_folds = 10,
+                            model_type = 'rf',
+                            lower_thresh = 0.9,
+                            upper_thresh = 251)
+
+collect_predictions(rf_model_results$resample_results)
+
+rf_cv_results = collect_best_predictions(rf_model_results$resample_results)
+
+rf_conf_analysis = analyze_confidence(rf_cv_results$best_param_probs,
+                                      concentration_values = rf_model_results$concentrations,
+                                      prediction_row = rf_cv_results$best_param_preds_rows)
+rf_conf_analysis %>% filter(concentration > 10) %>% count(correct)
+svm_model_results = augmented_modeling_function(labled_augmented_data,
+                            'target_vector',
+                            k_folds = 10,
+                            model_type = 'rbf_svm',
+                            lower_thresh = 0.1,
+                            upper_thresh = 251)
+
+svm_cv_results = collect_best_predictions(svm_model_results$resample_results)
+
+```
+
+```{r}
+collect_best_predictions = function(model_results){
+  best_params = show_best(model_results, metric = 'roc_auc')
+  
+  best_param_preds = collect_predictions(model_results, parameters = best_params[1,])
+  
+  best_param_preds_rows = best_param_preds$.row
+  
+  best_param_probs = data.frame('Beta' = best_param_preds$.pred_Beta,
+                              'Delta' = best_param_preds$.pred_Delta,
+                              'Omicron' = best_param_preds$.pred_Omicron,
+                              'WT' = best_param_preds$.pred_WT)
+  
+  max_diff = function(x){
+    vec = sort(unlist(x, use.names = F), decreasing = T)
+    diff = vec[1]-vec[2]
+  return(diff)
+  }
+  
+  max_diff = apply(best_param_probs, 1, max_diff)
+  max_prob = apply(best_param_probs, 1, function(x) paste0(names(best_param_probs)[x==max(x)]))
+  best_param_probs$max_diff = max_diff
+  best_param_probs$max_prob = max_prob
+  
+  best_param_probs$true_class = best_param_preds$target_vector
+  best_param_probs$correct = ifelse(best_param_probs$max_prob == best_param_probs$true_class, 1, 0)
+  best_param_probs$concentration = model_results$concentrations
+  
+  sum(best_param_probs$max_prob == best_param_preds$target_vector)/nrow(best_param_probs)
+
+  # Now I could see what the average difference is in probability between the max probability value and the second highest value. Ideally, i would see this
+  # increase as a function of increasing concentration
+  # Concentration values are obtained from the modeled dataset after concentration bounds
+  correct_preds = best_param_probs %>% filter(correct == 1) %>% reframe(mean = mean(max_diff),
+                                                        median = median(max_diff),
+                                                        sd = sd(max_diff)) %>% print()
+  incorrect_preds = best_param_probs %>% filter(correct == 0) %>% reframe(mean = mean(max_diff),
+                                                        median = median(max_diff),
+                                                        sd = sd(max_diff)) %>% print()
+  
+  accuracy = sum(best_param_probs$max_prob == best_param_preds$target_vector)/nrow(best_param_probs)
+  print(paste0("Accuracy: ", accuracy))
+  return(list("Accuracy" = accuracy,
+              "best_param_probs" = best_param_probs,
+              "correct_preds" = correct_preds,
+              "incorrect_preds" = incorrect_preds,
+              "best_param_preds_rows" = best_param_preds_rows))
+}
+```
+
+```{r}
+# Augmented modeling function with bayesian optimization + Xgboost results
+augmented_xgb_modeling_function = function(dataset,
+                                       target,
+                                       k_folds,
+                                       lower_thresh = 0,
+                                       upper_thresh = 251){
+  
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
+  concentrations = dataset$Conc.
+  
+  gen_rec = recipe(target_vector~., data = dataset) %>% 
+    update_role(SampleNum, Conc., new_role = 'id')  %>% 
+    step_YeoJohnson(all_predictors()) %>% 
+    # step_BoxCox(all_predictors()) %>% 
+    step_normalize(all_predictors())
+
+  folds = vfold_cv(dataset, v=5, repeats = 2, strata = target_vector)
+  
+  xgb_model = boost_tree(
+    trees = tune(),
+    learn_rate = tune(),
+    tree_depth = tune(),
+    min_n = tune(),
+    loss_reduction = tune(),
+    sample_size = tune(),
+    mtry = tune()
+  ) %>% 
+    set_mode('classification') %>% 
+    set_engine("xgboost", nthread = 6)
+  
+  xgb_workflow = workflow() %>% add_recipe(gen_rec) %>% add_model(xgb_model)
+  
+  xgb_params = parameters(
+    trees(), learn_rate(),
+    tree_depth(), min_n(),
+    loss_reduction(),
+    sample_size = sample_prop(), finalize(mtry(), dataset)
+  )
+  
+  xgb_params = xgb_params %>% update(trees = trees(c(250, 500)))
+  
+  xgb_resample = xgb_workflow %>% 
+    tune_bayes(
+      resamples = folds,
+      param_info = xgb_params,
+      iter = 30,
+      metrics = metric_set(accuracy, roc_auc),
+      control = control_bayes(no_improve = 10,
+                              save_pred = T)
+    )
+  
+  metrics = collect_metrics(xgb_resample)
+  print(metrics)
+  return(list("resample_results" = xgb_resample,
+              "concentrations" = concentrations))
+}
+augmented_data %>% filter(Conc. > 0.1)
+xgb_model_results = augmented_xgb_modeling_function(labled_augmented_data,
+                            'target_vector',
+                            k_folds = 5,
+                            lower_thresh = 0.1,
+                            upper_thresh = 251)
+
+xgb_cv_results = collect_best_predictions(xgb_model_results$resample_results)
+xgb_cv_results
+best_xgb_param_probs = xgb_cv_results$best_param_probs
+best_xgb_param_probs
+
+analyze_confidence = function(probability_df,
+                              concentration_values,
+                              prediction_row,
+                              high_conf_thresh=0.5,
+                              low_conf_thresh=0.5){
+  probability_df$concentration = concentration_values[prediction_row]
+  max_diff_mean = mean(probability_df$max_diff)
+  max_diff_sd = sd(probability_df$max_diff)
+  
+  probability_df = probability_df %>% mutate(
+  confidence = case_when(
+    max_diff > max_diff_mean + high_conf_thresh * max_diff_sd ~ "High",
+    max_diff < max_diff_mean - low_conf_thresh * max_diff_sd ~ "Low",
+    .default = 'Medium'
+    )
+  )
+  probability_df$rowNum = prediction_row
+  
+  print(probability_df %>% group_by(confidence) %>% count(correct))
+
+  print(probability_df %>% group_by(confidence) %>% summarize(mean_conc = mean(concentration),
+                                                        sd_conc = sd(concentration)))
+  p = ggplot(probability_df, aes(x=concentration))+
+    geom_histogram()+
+    scale_x_log10()+
+    facet_wrap(facets = 'confidence')
+  
+  print(p)
+  
+  return(probability_df)
+}
+
+xgb_conf_analysis = analyze_confidence(probability_df = best_xgb_param_probs,
+                      concentration_values = xgb_model_results$concentrations,
+                      prediction_row = xgb_cv_results$best_param_preds_rows)
+xgb_conf_analysis %>% filter(concentration > 10) %>% count(correct)
+
+xgb_cv_results$best_param_probs
+
+incorrect_pred_rows = xgb_cv_results$best_param_probs %>% cbind(row_value = xgb_cv_results$best_param_preds_rows) %>% filter(correct == 0)
+
+incorrect_preds = labled_augmented_data %>% filter(Conc. > 0.1)
+
+incorrect_preds = incorrect_preds[incorrect_pred_rows$row_value,]
+
+incorrect_preds
+thresh_augment = labled_augmented_data %>% filter(Conc. > 0.1)
+best_xgb_param_probs
+CrossTable(best_xgb_param_probs$max_prob,
+           best_xgb_param_probs$true_class)
+
+xgb_model_results$resample_results %>% collect_metrics(metrics = 'roc_auc') %>% arrange(-mean)
+```
+
+
+```{r}
+two_step_xgb_tune = function(dataset,
+                             upper_thresh = 251,
+                             lower_thresh = 0.1){
+  
+  dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh)
+  concentrations = dataset$Conc.
+  
+  gen_rec = recipe(target_vector~., data = dataset) %>% 
+    update_role(SampleNum, Conc., new_role = 'id') %>% 
+    step_YeoJohnson(all_predictors()) %>% 
+    step_classdist(class = "target_vector") %>% 
+    step_pca()
+    # step_normalize(all_predictors())
+
+  xgb_folds = vfold_cv(dataset, v=5, repeats = 2, strata = target_vector)
+  
+  xgb_mod_stage1 = boost_tree(
+    mode = "classification",
+    engine = "xgboost",
+    learn_rate = tune()
+  )
+  
+  grid_stage_1 = grid_random(
+    learn_rate(),
+    size= 20
+  )
+  
+  xgb_stage1_wf = workflow() %>% 
+    add_model(xgb_mod_stage1) %>% 
+    add_recipe(gen_rec)
+  
+  xgb_tune_stage_1 = tune_grid(
+    xgb_stage1_wf,
+    resamples = xgb_folds,
+    grid = grid_stage_1,
+    metrics = metric_set(roc_auc, accuracy),
+    control = control_grid(save_pred = TRUE)
+  )
+  print(xgb_tune_stage_1)
+
+  best_params_stage_1 = xgb_tune_stage_1 %>% 
+    collect_metrics() %>% 
+    arrange(-mean) %>% 
+    slice_head(n=1)
+  
+  xgb_mod_stage2 = xgb_mod_stage1 %>% 
+    set_args(
+      learn_rate = best_params_stage_1$learn_rate,
+      trees = tune(),
+      tree_depth = tune(),
+      min_n = tune(),
+      loss_reduction = tune(),
+      sample_size = tune(),
+      mtry = tune()
+    )
+  
+  xgb_tune_stage_2 = xgb_stage1_wf %>% 
+    update_model(xgb_mod_stage2)
+  
+  # Define stage 2 grid
+  params_stage_2 = parameters(
+    trees(),
+    tree_depth(), min_n(),
+    loss_reduction(),
+    sample_size = sample_prop(), finalize(mtry(), dataset)
+  )
+  
+  params_stage_2 = params_stage_2 %>% update(trees = trees(c(250, 500)))
+
+  bayes_tune_stage_2 = xgb_tune_stage_2 %>% 
+    tune_bayes(
+      resamples = xgb_folds,
+      param_info = params_stage_2,
+      iter = 30,
+      metrics = metric_set(accuracy, roc_auc),
+      control = control_bayes(no_improve = 10,
+                              save_pred = T)
+    )
+  
+  metrics = collect_metrics(bayes_tune_stage_2)
+  print(metrics)
+  return(list("resample_results" = bayes_tune_stage_2,
+              "concentrations" = concentrations))
+}
+
+two_step_xgb_results = two_step_xgb_tune(dataset = labled_augmented_data,
+                                         upper_thresh = 251,
+                                         lower_thresh = 0.9)
+
+two_step_xgb_best_preds = collect_best_predictions(two_step_xgb_results$resample_results)
+two_step_xgb_best_preds
+sum(two_step_xgb_best_preds$best_param_probs$correct)/length(two_step_xgb_best_preds$best_param_probs$correct)
+
+
+ggplot(data = two_step_best_xgb_param_probs, aes(x=max_diff))+
+  geom_histogram()
+
+ggplot(data = two_step_best_xgb_param_probs, aes(y=max_diff))+
+  geom_boxplot(aes(group=correct))
+# So if we say that mean 
+two_step_xgb_high_confidence_predictions = two_step_best_xgb_param_probs %>% filter(max_diff > mean(max_diff))
+two_step_xgb_low_confidence_predictions = two_step_best_xgb_param_probs %>% filter(max_diff < mean(max_diff))
+sum(two_step_xgb_high_confidence_predictions$correct)/nrow(two_step_xgb_high_confidence_predictions)
+sum(two_step_xgb_low_confidence_predictions$correct)/nrow(two_step_xgb_low_confidence_predictions)
+
+ggplot(data = two_step_xgb_high_confidence_predictions, aes(x=concentration))+
+  geom_histogram()
+
+ggplot(data = two_step_xgb_low_confidence_predictions, aes(x=concentration))+
+  geom_histogram()
+
+two_step_xgb_high_confidence_predictions
+```
+
+```{r}
+# Two step model - first predict using a random forest model, then take all low
+# confidence predictions
+
+
+build_probability_df = function(collected_metrics,
+                                collected_predictions,
+                                concentration_array){
+  # Given the collected metrics and collected predictions from a tidymodels
+  # resampling scheme, provide a single data set that contains the probability
+  # values, the predicted class, the actual class, the max probability, the 
+  # concentration values as obtained from the thresholded dataset, and some metric
+  # for how different the max class "probability" is from the other predicted probabilities 
+}
+
+check_confidence = function(dataset,
+                            probability_threshold){
+  # Given a single dataset containing class probabilities, return two unique
+  # datasets, one containing high confidence predictions, and one containing
+  # low confidence predictions
+  # INPUT is a dataframe like that produced by build_probability_df
+  # OUTPUT is two data frames similar to build_probability_df but filtered by a
+  # probability threshold
+}
+
+two_step_conf_model = function(){
+  # First trains a random forest model, then spits out the class prediction and probability values
+  # Builds a probability_df by feeding the model results to build_probability_df
+  # Splits the samples into two binds, a low and high confidence set of predictions
+  # Take your high confidence predictions and return as labeled values
+  # Take low confidence predictions and return to modeling process with RF-predicted probabilities as an additional feature
+  # Run low confidence predictions through a RBF-SVM model and repeat
+  # Return high confidence RBF-SVM as labeled values
+  # Return low confidence RBF-SVM as labeled values with an additional flag
+  # Compare percent correct values from high confidence first pass, to high confidence second pass, to low confidence second pass
+}
+
+```
+
+```{r}
+test_vec = augmented_data %>% filter(target_vector == 'Beta', Conc. == 250) %>% select(cAb10) %>% unlist()
+test_vec
+test_grubbs = grubbs.test(test_vec, type = 10)
+test_grubbs
+identify_outliers = function(vec){
+  
+}
+
+# Should return an array with an outlier replaceed with NA 
+identify_outliers(test_vec)
+```
+

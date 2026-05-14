@@ -1,143 +1,189 @@
 ---
-title: "SES_fs"
+title: "SES Feature Selection"
 output: html_document
 date: "2023-02-28"
 ---
 
-```{r}
+```{r setup, message=FALSE, warning=FALSE}
 library(tidyverse)
 library(caret)
-library(ggplot2)
-library(stats)
-library(psych)
-library(gmodels)
-library(gridExtra)
-library(doParallel)
-library(roxygen2)
-library(RColorBrewer)
-library(ggpubr)
 library(MXM)
 ```
 
-```{r}
-# This file is within the Embedded_FS folder in the variant_detection_codebase
-# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
-# order to run in isolation, so I'm just setting the wd to the parent from which
-# I can call both files. The wd will be reset after this chunk anyway
+```{r load_data}
 setwd("..")
 source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
-source("Embedded_FS/rf_accessory_functions.R")
-source("Embedded_FS/rf_resampling_function.R")
 split_dab_df_list = main_preprocessor()
+# dAb4, dAb7, and dAb11 show consistently poor performance across all models
+split_dab_df_list = split_dab_df_list[-c(1, 4, 6)]
 ```
 
+SES (Statistically Equivalent Signatures) finds the Markov Boundary of the
+target variable using conditional independence testing. Unlike importance-based
+methods (RF, LASSO, MARS, PLS), SES identifies the minimal sufficient feature
+set and can return multiple equivalent signatures when features are redundant.
 
-```{r}
-# Implementing statistically equivalent signature with my data
-# Trimming data
-test_df = split_dab_df_list[[10]] %>% select(-c(Conc., Replicates)) %>% mutate_at("target_vector", as.factor)
+MMPC (Max-Min Parents and Children) is a companion algorithm that finds the
+parents and children of the target in the causal graph. It returns a single
+feature set rather than a set of equivalent signatures.
 
-# Splitting data
-test_folds = createFolds(test_df$target_vector, k = 5)
+Neither SES nor MMPC has a tidymodels integration, so this file retains the
+MXM-based architecture. The output structure mirrors the other FS files where
+possible: each function returns a named list with feature selections and
+performance metrics on a holdout test set.
 
-mxm_train = test_df[-test_folds[[1]], ]
-mxm_test = test_df[test_folds[[1]], ]
+```{r ses_function}
+#' run_ses_fs
+#'
+#' Runs SES and MMPC on a single dAb dataframe. Splits data into train/test,
+#' fits SES on the training fold to identify the Markov Boundary, then
+#' evaluates the selected signature using ses.model() on both train and test.
+#'
+#' @param dab_df      Single dAb dataframe from main_preprocessor()
+#' @param target      Name of the outcome column
+#' @param threshold   Rows at or below this concentration are excluded
+#' @param k_folds     Number of folds for the outer holdout split (uses fold 1
+#'                    as test, remaining as train — one pass, not repeated CV)
+#' @param max_k       Maximum conditioning set size for SES/MMPC
+#' @param alpha       Significance threshold for conditional independence tests
+#' @param test        MXM test to use. 'testIndMultinom' is appropriate for
+#'                    the 4-class SARS-CoV-2 variant outcome
+#' @param seed        RNG seed for reproducibility
+#'
+#' @return Named list:
+#'   ses_selected       — character vector of selected feature names
+#'   ses_signatures     — matrix of all equivalent signatures (one per row)
+#'   ses_pvalues        — association p-values for all predictors
+#'   ses_model          — ses.model() fit on the selected signature
+#'   mmpc_selected      — character vector of MMPC-selected feature names
+#'   ses_object         — raw SES S4 object (for downstream inspection)
+#'   mmpc_object        — raw MMPC S4 object
+run_ses_fs = function(dab_df,
+                      target    = "target_vector",
+                      threshold = 0,
+                      k_folds   = 5,
+                      max_k     = 3,
+                      alpha     = 0.1,
+                      test      = "testIndMultinom",
+                      seed      = 2024) {
 
-x_mxm_train = mxm_train %>% select(-target_vector)
-y_mxm_train = mxm_train[["target_vector"]]
+  set.seed(seed)
 
-ses_default_mod = SES(
-  target = y_mxm_train,
-  dataset = x_mxm_train,
-  max_k = 3,
-  threshold = 0.1,
-  test = 'testIndMultinom',
-  ini = NULL,
-  wei = NULL,
-  user_test = NULL,
-  hash = TRUE, # Setting hash=T allows you to quickly recalculate the SES using a different threshold or max_k
-  hashObject = NULL,
-  ncores = 1
-)
+  clean_df = dab_df |>
+    filter(Conc. > threshold) |>
+    select(-c(Conc., Replicates)) |>
+    mutate(across(all_of(target), as.factor))
 
+  folds = createFolds(clean_df[[target]], k = k_folds)
+  train = clean_df[-folds[[1]], ]
+  test  = clean_df[ folds[[1]], ]
 
-# SES readout
-ses_default_mod@selectedVars # The selected variables, i.e., the signature of the target variable. This is similar to the ouput of the signature attr
-# In this training case, it outputs 5, 7, 8, 9, 11, 14
-SelectedVars_names<-colnames(mxm_train[ses_default_mod@selectedVars])
-SelectedVars_names 
-# The actual names of these vars are dab18_cab9, dab18_cab13, dab18_cab14, dab18_cab15, dab18_cab21, dab18_cab25
-# We can then order these vars by increasing p-values with the selectedVarsOrder attr 
-SelectedVars_ordered <- colnames(mxm_train[ses_default_mod@selectedVarsOrder])
-SelectedVars_ordered 
-# In this case, the ordered names are dab18_cab21, dab18_cab13, dab18_cab9, dab18_cab15, dab18_cab14, dab18_cab25
-# We can also plot the log(p-values) associated with the significance tests we performed during the SES algorithm 
-plot(ses_default_mod, mode = 'all')  # This plot is really confusing because it doesn't seem to align with the ordered vars
+  x_train = train |> select(-all_of(target))
+  y_train = train[[target]]
 
-ses_default_mod@signatures # A matrix reporting all equivalent signatures (one signature for each row)
-ses_default_mod@queues # Queues is a list containing a list (queue) of equivalent features for each variable included in selectedVars. An equivalent signature can be built by selecting one and only one feature from each queue. In the case that there are no equivalent signatures, each list within queues will be a single value
+  # ---- SES ----------------------------------------------------------------
+  ses_mod = SES(
+    target     = y_train,
+    dataset    = x_train,
+    max_k      = max_k,
+    threshold  = alpha,
+    test       = test,
+    hash       = TRUE,
+    ncores     = 1
+  )
 
-ses_default_mod@n.tests
+  ses_selected = colnames(x_train)[ses_mod@selectedVars]
+  ses_ordered  = colnames(x_train)[ses_mod@selectedVarsOrder]
 
-ses_default_mod@pvalues # Vector reporting the strength of the association of each predictor with the target, in the context of all other variables
-ses_default_mod@stats # Very similar to pvalues, but for each feature included in the data set, pvalues reports the strength of its association with the target in the context of all other variables. Particularly, this vector reports the max p-values found when the association of each variable with the target is tested agaisnt different conditional sets. Lower pvalues indicate higher association whereas higher stats indicates higher association
-ses_default_mod@univ # A list containing the results from the univariate tests
+  ses_sig_df = if (length(ses_selected) > 0) {
+    ses_fit = ses.model(
+      target    = as.matrix(y_train),
+      dataset   = as.matrix(x_train),
+      wei       = NULL,
+      sesObject = ses_mod,
+      test      = test
+    )
+  } else {
+    message("SES selected no features for this dAb.")
+    NULL
+  }
 
-# We can also train a model using the significant variables. One or more classification models are returned
-# ~ ~ ~ glm() Model Estimates Using SES Feature Subset As Predictor Variables ~ ~ ~ 
-mxm_mod_ses_1 = ses.model(target = as.matrix(y_mxm_train),
-                          dataset = as.matrix(x_mxm_train),
-                          wei = NULL,
-                          sesObject = mxm_default_mod,
-                          test = 'testIndMultinom')
+  # ---- MMPC ---------------------------------------------------------------
+  mmpc_mod = MMPC(
+    target    = y_train,
+    dataset   = x_train,
+    max_k     = max_k,
+    threshold = alpha,
+    test      = test,
+    hash      = TRUE,
+    ncores    = 1
+  )
 
-mxm_mod_ses_1
-mxm_mod_ses_1$mod
-mxm_mod_ses_1$signature
+  mmpc_selected = colnames(x_train)[mmpc_mod@selectedVars]
+  mmpc_ordered  = colnames(x_train)[mmpc_mod@selectedVarsOrder]
 
-
-# If the analysis has to be done using permutations (when few observations are available), then this could be applied like this:
-perm_ses_model = perm.ses(target = y_mxm_train,
-                          dataset = x_mxm_train,
-                          R = 999,
-                          max_k = 3,
-                          threshold = 0.1,
-                          test = 'permMultinom',
-                          ini = NULL,
-                          wei = NULL,
-                          user_test = NULL,
-                          hash = TRUE,
-                          hashObject = NULL,
-                          ncores = 1)
-
-
-
+  list(
+    ses_selected   = ses_selected,
+    ses_ordered    = ses_ordered,
+    ses_signatures = ses_mod@signatures,
+    ses_pvalues    = setNames(ses_mod@pvalues, colnames(x_train)),
+    ses_model      = ses_sig_df,
+    mmpc_selected  = mmpc_selected,
+    mmpc_ordered   = mmpc_ordered,
+    ses_object     = ses_mod,
+    mmpc_object    = mmpc_mod
+  )
+}
 
 
-mmpc_default_mod = MMPC(
-  target = y_mxm_train,
-  dataset = x_mxm_train,
-  max_k = 3, # the maximum size for the conditioning set to use in the conditional independence test
-  threshold = 0.1,
-  test = 'testIndMultinom',
-  ini = NULL,
-  wei = NULL,
-  user_test = NULL,
-  hash = TRUE,
-  hashObject = NULL,
-  ncores = 1
-)
-# MMPC readout
-mmpc_default_mod@selectedVars
-SelectedVars_names<-colnames(mxm_train[mmpc_default_mod@selectedVars])
-SelectedVars_names
-
-SelectedVars_ordered <- colnames(mxm_train[mmpc_default_mod@selectedVarsOrder])
-SelectedVars_ordered
-
-
-
-
-
+#' run_ses_fs_all_dabs
+#'
+#' Applies run_ses_fs across a named list of dAb dataframes.
+#'
+#' @param dab_df_list Named list of dAb dataframes (e.g. from main_preprocessor())
+#' @param ...         Passed to run_ses_fs
+run_ses_fs_all_dabs = function(dab_df_list, ...) {
+  imap(dab_df_list, function(df, name) {
+    message("SES FS: ", name)
+    run_ses_fs(df, ...)
+  })
+}
 ```
 
+```{r single_dab_example, warning=FALSE}
+test_df  = split_dab_df_list[[10]]
+ses_result = run_ses_fs(test_df, seed = 2024)
+
+ses_result$ses_selected
+ses_result$ses_ordered
+ses_result$ses_signatures
+
+# p-values for all predictors (lower = stronger association in context of others)
+sort(ses_result$ses_pvalues)
+
+# GLM fit on the SES-selected signature
+ses_result$ses_model
+
+ses_result$mmpc_selected
+ses_result$mmpc_ordered
+```
+
+```{r all_dabs, warning=FALSE}
+all_ses_results = run_ses_fs_all_dabs(split_dab_df_list)
+
+# Summarise selected feature counts across dAbs
+feature_counts = imap_dfr(all_ses_results, function(res, name) {
+  tibble(
+    dab           = name,
+    ses_n_selected  = length(res$ses_selected),
+    mmpc_n_selected = length(res$mmpc_selected)
+  )
+})
+feature_counts
+
+# View selected features per dAb
+imap(all_ses_results, function(res, name) {
+  cat(name, "-- SES:", paste(res$ses_selected, collapse = ", "),
+      "| MMPC:", paste(res$mmpc_selected, collapse = ", "), "\n")
+})
+```

@@ -1,0 +1,787 @@
+---
+title: "CovSpot Thesis Figures"
+author: "Zach"
+date: "2026-04-27"
+output:
+  html_document:
+    toc: true
+    toc_depth: 2
+    toc_float: true
+    code_folding: hide
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE,
+                      fig.path = "figs/", dev = "png", dpi = 300)
+knitr::opts_knit$set(root.dir = "C:/Users/Zach/Documents/Duke/covspot_analysis/screen_analysis/variant_detection_codebase")
+```
+
+# Purpose
+
+Single Rmd that compiles thesis-ready figures from the existing tidymodels FS
+results and the cleaned screen data. Each section saves a high-DPI PNG into
+`Thesis_figures/figs/` so figures can be dropped directly into the manuscript.
+
+Conventions:
+- 3 seeds: 1969, 1986, 2024
+- "Top dAbs" = the union of the top performers across LASSO and RF
+  (see project memory): dAb5, dAb6, dAb8, dAb13, dAb16, dAb17, dAb18, dAb19
+- All `*_fvr` tibbles below come from the `final_test_results` slot -- retrained
+  on full TRAINING and scored on FINAL_TEST at each feature count.
+
+```{r packages}
+library(tidyverse)
+library(tidymodels)
+library(ggplot2)
+library(ggbeeswarm)
+library(patchwork)
+library(scales)
+library(RColorBrewer)
+
+# tidymodels FS scripts pull in optional engines (discrim, plsmod, earth).
+# We only need plot_perf_by_features from them; if a package is missing, skip
+# the source -- the .rds results still load fine and we redefine our own
+# aggregation below.
+safe_source <- function(path) {
+  tryCatch(source(path),
+           error = function(e) message("Skipped ", path, ": ", conditionMessage(e)))
+}
+safe_source("Embedded_FS/lasso_tidymodels.R")
+safe_source("Embedded_FS/rf_tidymodels.R")
+safe_source("Embedded_FS/mars_tidymodels.R")
+safe_source("Embedded_FS/pls_tidymodels.R")
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+
+FIG_DIR <- "Thesis_figures/figs"
+dir.create(FIG_DIR, showWarnings = FALSE, recursive = TRUE)
+
+VARIANT_LEVELS <- c("WT", "Beta", "Delta", "Omicron")
+VARIANT_COLORS <- c(WT      = "#4C72B0",
+                    Beta    = "#DD8452",
+                    Delta   = "#55A868",
+                    Omicron = "#C44E52")
+
+TOP_DABS <- c("dAb5", "dAb6", "dAb8", "dAb13",
+              "dAb16", "dAb17", "dAb18", "dAb19")
+
+save_fig <- function(plot, name, width = 8, height = 5) {
+  path <- file.path(FIG_DIR, paste0(name, ".png"))
+  ggsave(path, plot, width = width, height = height, dpi = 300)
+  message("Saved: ", path)
+  invisible(path)
+}
+```
+
+```{r load-fs-runs}
+# All FS runs are list-of-lists: outer = seed run, inner = named by dAb,
+# leaves contain $final_test_results, $feature_val_results, $test_metrics,
+# $test_conf_mat, $feature_ranking, $run_summary, $best_features
+rf_runs     <- readRDS("Embedded_FS/all_rf_runs_multiseed.rds")
+lasso_runs  <- readRDS("Embedded_FS/all_lasso_runs_multiseed.rds")
+mars_runs   <- readRDS("Embedded_FS/all_mars_runs_multiseed.rds")
+pls_runs    <- readRDS("Embedded_FS/all_pls_runs_multiseed.rds")
+mrmr_runs   <- readRDS("Embedded_FS/all_mrmr_runs_multiseed.rds")
+boruta_runs <- readRDS("Embedded_FS/all_boruta_runs_multiseed.rds")
+
+extract_slot <- function(runs, slot) {
+  map_dfr(runs, \(run) map_dfr(run, \(x) x[[slot]]))
+}
+
+method_runs <- list(
+  LASSO  = lasso_runs,
+  RF     = rf_runs,
+  MARS   = mars_runs,
+  `PLS-DA` = pls_runs,
+  mRMR   = mrmr_runs,
+  Boruta = boruta_runs
+)
+
+# Stacked, long: all (method x seed x dAb x n_features x .metric) rows
+all_fvr <- imap_dfr(method_runs, \(runs, m)
+  extract_slot(runs, "final_test_results") |> mutate(method = m)
+)
+
+all_test_metrics <- imap_dfr(method_runs, \(runs, m)
+  extract_slot(runs, "test_metrics") |> mutate(method = m)
+)
+
+all_run_summary <- imap_dfr(method_runs, \(runs, m)
+  extract_slot(runs, "run_summary") |> mutate(method = m)
+)
+
+# dAb factor with consistent natural ordering (numeric inside the label)
+dab_levels <- all_fvr$dab |> unique() |>
+  (\(x) x[order(as.integer(str_remove(x, "dAb")))])()
+all_fvr$dab <- factor(all_fvr$dab, levels = dab_levels)
+all_test_metrics$dab <- factor(all_test_metrics$dab, levels = dab_levels)
+```
+
+```{r load-screen-data}
+# Returns a named list of 13 dAb dataframes. Each has Conc., Replicates,
+# target_vector, and dAbX_cAbY columns. Long form below for plotting.
+dab_list <- main_preprocessor()  # reads data/covid_screen_data_cleaned.csv internally
+
+screen_long <- imap_dfr(dab_list, function(df, dab) {
+  df |>
+    pivot_longer(starts_with(paste0(dab, "_")),
+                 names_to = "pair", values_to = "fluor") |>
+    mutate(dab = dab,
+           cab = str_remove(pair, paste0(dab, "_")),
+           target_vector = factor(target_vector, levels = VARIANT_LEVELS))
+})
+```
+
+---
+
+# 1. Cross-method performance grid (aggregate)
+
+One panel per method, same axes. Mean accuracy / kappa / macro-F1 vs. feature
+count, +/-1 SE across (seed x dAb).
+
+```{r fig-1-cross-method-grid, fig.width=12, fig.height=7}
+agg_summary <- all_fvr |>
+  filter(.metric %in% c("accuracy", "kap", "f_meas")) |>
+  mutate(metric_label = recode(.metric,
+                               accuracy = "Accuracy",
+                               kap      = "Kappa",
+                               f_meas   = "Macro-F1")) |>
+  group_by(method, n_features, metric_label) |>
+  summarise(mean_val = mean(.estimate),
+            se_val   = sd(.estimate) / sqrt(n()),
+            .groups  = "drop")
+
+p1 <- ggplot(agg_summary,
+             aes(n_features, mean_val,
+                 color = metric_label, group = metric_label)) +
+  geom_line() + geom_point() +
+  geom_errorbar(aes(ymin = mean_val - se_val, ymax = mean_val + se_val),
+                width = 0.3) +
+  facet_wrap(~ method, ncol = 3) +
+  scale_x_reverse(breaks = sort(unique(agg_summary$n_features), decreasing = TRUE)) +
+  scale_y_continuous(limits = c(0, 1)) +
+  scale_color_manual(values = c(Accuracy   = "#6BAED6",
+                                `Macro-F1` = "#2171B5",
+                                Kappa      = "#08306B"),
+                     name = "Metric") +
+  labs(x = "Number of antibody pairs in the model",
+       y = "Mean performance (across 3 seeds x all dAbs)",
+       title = "Performance vs. feature subset size by FS method") +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(),
+        panel.grid.minor = element_blank())
+
+save_fig(p1, "01_cross_method_perf_grid", width = 12, height = 7)
+p1
+```
+
+---
+
+# 2. Method x dAb accuracy heatmap
+
+Mean test accuracy at each method's auto-selected `best_n_features`, averaged
+across seeds. Reveals which dAbs are universally easy and which are
+method-dependent.
+
+```{r fig-2-method-dab-heatmap, fig.width=11, fig.height=4.5}
+acc_by_method_dab <- all_test_metrics |>
+  filter(.metric == "accuracy") |>
+  group_by(method, dab) |>
+  summarise(mean_acc = mean(.estimate),
+            sd_acc   = sd(.estimate),
+            .groups  = "drop")
+
+p2 <- ggplot(acc_by_method_dab,
+             aes(dab, fct_rev(factor(method)), fill = mean_acc)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%.2f", mean_acc)), size = 3) +
+  scale_fill_gradient2(low = "#B2182B", mid = "#F7F7F7", high = "#2166AC",
+                       midpoint = 0.5, limits = c(0, 1),
+                       name = "Mean test\naccuracy") +
+  labs(x = NULL, y = NULL,
+       title = "Test accuracy by FS method x dAb (mean across 3 seeds)",
+       subtitle = "At each method's auto-selected best N features") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid  = element_blank())
+
+save_fig(p2, "02_method_dab_acc_heatmap", width = 11, height = 4.5)
+p2
+```
+
+---
+
+# 6. Dose-response curves for selected pairs
+
+Mean fluorescence vs. concentration, faceted by variant. Picks the top-ranked
+cAb partner for each top dAb (ranked by LASSO importance averaged across seeds).
+
+```{r fig-6-dose-response, fig.width=12, fig.height=8}
+# Top-1 cAb partner per top dAb from LASSO importance (averaged across seeds)
+top_pairs <- extract_slot(lasso_runs, "feature_ranking") |>
+  filter(str_detect(feature, paste0("^", paste(TOP_DABS, collapse = "|"), "_"))) |>
+  mutate(dab = str_extract(feature, "^dAb[0-9]+")) |>
+  group_by(dab, feature) |>
+  summarise(mean_imp = mean(importance), .groups = "drop") |>
+  group_by(dab) |>
+  slice_max(mean_imp, n = 1, with_ties = FALSE) |>
+  ungroup() |>
+  mutate(cab = str_remove(feature, "^dAb[0-9]+_"))
+
+dr_data <- screen_long |>
+  semi_join(top_pairs, by = c("dab", "cab")) |>
+  group_by(dab, cab, target_vector, Conc.) |>
+  summarise(mean_f = mean(fluor),
+            sd_f   = sd(fluor),
+            .groups = "drop") |>
+  mutate(pair_label = paste0(dab, " x ", cab),
+         pair_label = factor(pair_label,
+                             levels = paste0(TOP_DABS, " x ",
+                                             top_pairs$cab[match(TOP_DABS, top_pairs$dab)])))
+
+p6 <- ggplot(dr_data,
+             aes(Conc., mean_f, color = target_vector, group = target_vector)) +
+  geom_ribbon(aes(ymin = mean_f - sd_f, ymax = mean_f + sd_f,
+                  fill = target_vector),
+              alpha = 0.15, color = NA) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.5) +
+  scale_x_log10(labels = label_number()) +
+  scale_color_manual(values = VARIANT_COLORS, name = "Variant") +
+  scale_fill_manual(values = VARIANT_COLORS, guide = "none") +
+  facet_wrap(~ pair_label, ncol = 4, scales = "free_y") +
+  labs(x = "Concentration (ng/mL, log scale)",
+       y = "Fluorescence (mean +/- SD across replicates)",
+       title = "Dose-response by variant for top-LASSO cAb partner per dAb") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),
+        legend.position  = "bottom")
+
+save_fig(p6, "06_dose_response_top_pairs", width = 12, height = 8)
+p6
+```
+
+---
+
+# 13. Combined screen-data beeswarms (top 8 dAbs)
+
+A single 2x4 figure summarising the raw screen for the dAbs that drive the
+final model.
+
+```{r fig-13-beeswarm-grid, fig.width=14, fig.height=8}
+beeswarm_df <- screen_long |>
+  filter(dab %in% TOP_DABS) |>
+  mutate(dab = factor(dab, levels = TOP_DABS))
+
+p13 <- ggplot(beeswarm_df,
+              aes(target_vector, fluor, color = target_vector)) +
+  geom_quasirandom(size = 0.4, alpha = 0.5, width = 0.3) +
+  stat_summary(fun = median, geom = "crossbar",
+               width = 0.55, color = "black", linewidth = 0.3) +
+  scale_color_manual(values = VARIANT_COLORS, guide = "none") +
+  facet_wrap(~ dab, ncol = 4) +
+  labs(x = NULL, y = "Fluorescence (all cAb partners pooled)",
+       title = "Per-variant fluorescence distributions for top dAbs",
+       subtitle = "Each point = one (cAb partner x replicate x concentration) reading") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+save_fig(p13, "13_beeswarm_top_dabs", width = 14, height = 8)
+p13
+```
+
+---
+
+---
+
+# 3. Feature-frequency heatmap (selected pairs across methods)
+
+For each top dAb, count how many (method x seed) runs picked each cAb pair into
+the final model. Reveals which pairs are "consensus" picks vs. method-specific.
+Each cell maxes at 18 = 6 methods x 3 seeds.
+
+```{r fig-3-feature-frequency, fig.width=12, fig.height=8}
+selected_features <- imap_dfr(method_runs, \(runs, m)
+  imap_dfr(runs, \(run, seed_idx)
+    map_dfr(run, \(x) {
+      bf <- x$run_summary$best_features[[1]]
+      if (is.null(bf) || length(bf) == 0) return(tibble())
+      tibble(method = m,
+             seed   = x$run_summary$seed,
+             dab    = x$run_summary$dab,
+             feature = bf)
+    })
+  )
+) |>
+  mutate(cab = str_remove(feature, "^dAb[0-9]+_"))
+
+freq_df <- selected_features |>
+  filter(dab %in% TOP_DABS) |>
+  group_by(dab, cab) |>
+  summarise(n_selections = n(), .groups = "drop") |>
+  mutate(dab = factor(dab, levels = TOP_DABS),
+         cab = factor(cab, levels = paste0("cAb", 1:29)))
+
+p3 <- ggplot(freq_df, aes(cab, fct_rev(dab), fill = n_selections)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = n_selections,
+                color = n_selections > 9), size = 3, show.legend = FALSE) +
+  scale_color_manual(values = c(`TRUE` = "white", `FALSE` = "grey15")) +
+  scale_fill_gradient(low = "#F7FBFF", high = "#08306B",
+                      name = "# (method x seed)\nselections",
+                      limits = c(0, 18)) +
+  labs(x = NULL, y = NULL,
+       title = "Selection frequency of cAb pairs by dAb",
+       subtitle = "Counts across 6 FS methods x 3 seeds (max 18). High counts = consensus pairs.") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid  = element_blank())
+
+save_fig(p3, "03_feature_frequency_heatmap", width = 12, height = 5)
+p3
+```
+
+---
+
+# 4. Confusion matrices for top dAbs (RF, summed across seeds)
+
+Each `$test_conf_mat` is a `yardstick::conf_mat`. Sum the underlying tables
+across the 3 seeds per dAb so each cell reflects the full evaluation.
+
+```{r fig-4-confusion-matrices, fig.width=14, fig.height=7}
+get_cm_table <- function(cm) {
+  tab <- cm$table
+  as_tibble(as.table(tab))
+}
+
+cm_long <- imap_dfr(method_runs, \(runs, m)
+  map_dfr(runs, \(run)
+    imap_dfr(run, \(x, dab_name)
+      get_cm_table(x$test_conf_mat) |> mutate(dab = dab_name)
+    )
+  ) |> mutate(method = m)
+) |>
+  rename(predicted = Prediction, truth = Truth, count = n) |>
+  mutate(truth     = factor(truth,     levels = VARIANT_LEVELS),
+         predicted = factor(predicted, levels = VARIANT_LEVELS))
+
+cm_rf_top <- cm_long |>
+  filter(method == "RF", dab %in% TOP_DABS) |>
+  group_by(dab, truth, predicted) |>
+  summarise(count = sum(count), .groups = "drop") |>
+  group_by(dab, truth) |>
+  mutate(prop = count / sum(count)) |>
+  ungroup() |>
+  mutate(dab = factor(dab, levels = TOP_DABS))
+
+p4 <- ggplot(cm_rf_top, aes(predicted, fct_rev(truth), fill = prop)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = sprintf("%d\n(%.0f%%)", count, 100 * prop)),
+            size = 2.6, color = "black") +
+  scale_fill_gradient(low = "#F7FBFF", high = "#2171B5",
+                      limits = c(0, 1), name = "Row prop.") +
+  facet_wrap(~ dab, ncol = 4) +
+  labs(x = "Predicted variant", y = "True variant",
+       title = "RF test-set confusion matrices for top dAbs",
+       subtitle = "Counts (and row %) summed across 3 seeds at each dAb's best N features") +
+  theme_bw() +
+  theme(panel.grid = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+save_fig(p4, "04_confusion_matrices_rf_top", width = 14, height = 7)
+p4
+```
+
+---
+
+# 5. Per-class precision / recall / F1 (RF, top dAbs)
+
+Derived directly from the summed confusion matrices in section 4.
+
+```{r fig-5-per-class-metrics, fig.width=12, fig.height=6}
+per_class_df <- cm_rf_top |>
+  group_by(dab) |>
+  group_modify(~ {
+    tab <- xtabs(count ~ truth + predicted, data = .x)
+    map_dfr(VARIANT_LEVELS, \(v) {
+      tp <- tab[v, v]
+      fn <- sum(tab[v, ]) - tp
+      fp <- sum(tab[, v]) - tp
+      precision <- ifelse(tp + fp == 0, NA, tp / (tp + fp))
+      recall    <- ifelse(tp + fn == 0, NA, tp / (tp + fn))
+      f1        <- ifelse(is.na(precision) || is.na(recall) || (precision + recall) == 0,
+                          NA, 2 * precision * recall / (precision + recall))
+      tibble(variant = v, precision = precision, recall = recall, f1 = f1)
+    })
+  }) |>
+  ungroup() |>
+  pivot_longer(c(precision, recall, f1),
+               names_to = "metric", values_to = "value") |>
+  mutate(metric  = factor(metric, levels = c("precision", "recall", "f1"),
+                                  labels = c("Precision", "Recall", "F1")),
+         variant = factor(variant, levels = VARIANT_LEVELS))
+
+p5 <- ggplot(per_class_df,
+             aes(variant, value, fill = variant)) +
+  geom_col(width = 0.7) +
+  geom_text(aes(label = sprintf("%.2f", value)),
+            vjust = -0.3, size = 2.6) +
+  scale_fill_manual(values = VARIANT_COLORS, guide = "none") +
+  scale_y_continuous(limits = c(0, 1.08), breaks = seq(0, 1, 0.25)) +
+  facet_grid(metric ~ dab) +
+  labs(x = NULL, y = "Score",
+       title = "Per-variant precision / recall / F1 (RF, summed across 3 seeds)") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid.minor = element_blank(),
+        strip.text = element_text(face = "bold"))
+
+save_fig(p5, "05_per_class_metrics_rf", width = 12, height = 6)
+p5
+```
+
+---
+
+# 7. Replicate coefficient-of-variation (CV) ranking
+
+CV = sd / mean across the 3 replicates at each (Conc. x variant). Lower CV =
+more reproducible pair. Top 25 most reproducible and bottom 25 least.
+
+```{r fig-7-replicate-cv, fig.width=12, fig.height=7}
+cv_df <- screen_long |>
+  group_by(dab, cab, Conc., target_vector) |>
+  summarise(cv = sd(fluor) / mean(fluor), .groups = "drop") |>
+  group_by(dab, cab) |>
+  summarise(mean_cv = mean(cv, na.rm = TRUE),
+            n_obs = n(),
+            .groups = "drop") |>
+  mutate(pair = paste0(dab, "_", cab))
+
+cv_top <- cv_df |> slice_min(mean_cv, n = 25) |> mutate(group = "Most reproducible (low CV)")
+cv_bot <- cv_df |> slice_max(mean_cv, n = 25) |> mutate(group = "Least reproducible (high CV)")
+cv_extreme <- bind_rows(cv_top, cv_bot) |>
+  mutate(group = factor(group, levels = c("Most reproducible (low CV)",
+                                          "Least reproducible (high CV)")),
+         pair  = fct_reorder(pair, mean_cv))
+
+p7 <- ggplot(cv_extreme, aes(mean_cv, pair, fill = dab)) +
+  geom_col() +
+  facet_wrap(~ group, scales = "free", ncol = 2) +
+  scale_x_continuous(labels = label_percent(accuracy = 1)) +
+  scale_fill_brewer(palette = "Paired", name = "dAb") +
+  labs(x = "Mean CV across (Conc. x variant) cells", y = NULL,
+       title = "Replicate reproducibility ranking of antibody pairs",
+       subtitle = "Top 25 most/least reproducible pairs across all dAbs") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+save_fig(p7, "07_replicate_cv_ranking", width = 12, height = 7)
+p7
+```
+
+---
+
+# 8. PCA per top dAb, colored by variant
+
+For each top dAb, run prcomp on its 29 cAb columns; show first 2 PCs.
+
+```{r fig-8-pca-per-dab, fig.width=14, fig.height=7}
+pca_df <- map_dfr(TOP_DABS, function(d) {
+  df <- dab_list[[d]]
+  feat <- df |> select(starts_with(paste0(d, "_")))
+  pca <- prcomp(feat, center = TRUE, scale. = TRUE)
+  tibble(dab = d,
+         PC1 = pca$x[, 1],
+         PC2 = pca$x[, 2],
+         var1 = round(100 * (pca$sdev[1]^2 / sum(pca$sdev^2)), 1),
+         var2 = round(100 * (pca$sdev[2]^2 / sum(pca$sdev^2)), 1),
+         target_vector = factor(df$target_vector, levels = VARIANT_LEVELS))
+}) |>
+  group_by(dab) |>
+  mutate(panel_label = paste0(dab, "  (PC1 ", var1[1], "%, PC2 ", var2[1], "%)")) |>
+  ungroup() |>
+  mutate(panel_label = factor(panel_label,
+                              levels = unique(panel_label)[order(match(
+                                str_extract(unique(panel_label), "^dAb[0-9]+"),
+                                TOP_DABS))]))
+
+p8 <- ggplot(pca_df, aes(PC1, PC2, color = target_vector)) +
+  geom_point(alpha = 0.75, size = 1.4) +
+  stat_ellipse(level = 0.68, linewidth = 0.5) +
+  scale_color_manual(values = VARIANT_COLORS, name = "Variant") +
+  facet_wrap(~ panel_label, ncol = 4, scales = "free") +
+  labs(title = "PCA of all 29 cAb columns per top dAb (colored by variant)",
+       subtitle = "Ellipses = 68% confidence; visualizes pre-classification separability") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),
+        legend.position  = "bottom",
+        strip.text       = element_text(face = "bold", size = 11),
+        strip.background = element_rect(fill = "grey90", color = NA),
+        aspect.ratio     = 0.9)
+
+save_fig(p8, "08_pca_per_dab", width = 14, height = 7)
+p8
+```
+
+---
+
+# 9. Augmented vs. original distribution overlay
+
+`covspot_data_aug_1_processed.csv` has a different shape (single-dAb, columns
+named cAbX). Overlay the per-cAb fluorescence density of the augmented set
+against the matching original subset for the dAb the augmented file covers.
+
+```{r fig-9-augmented-overlay, fig.width=14, fig.height=7}
+aug_path <- "Embedded_FS/covspot_data_aug_1_processed.csv"
+if (file.exists(aug_path)) {
+  aug_df <- read.csv(aug_path) |>
+    mutate(target_vector = factor(target_vector, levels = VARIANT_LEVELS))
+
+  cab_cols <- aug_df |> select(starts_with("cAb")) |> colnames()
+
+  # Try to match the dAb whose original cAb columns overlap with aug_df's
+  candidate_dabs <- map_dfr(names(dab_list), function(d) {
+    orig_cabs <- str_remove(grep(paste0("^", d, "_"),
+                                 colnames(dab_list[[d]]), value = TRUE),
+                            paste0("^", d, "_"))
+    tibble(dab = d, n_overlap = length(intersect(cab_cols, orig_cabs)))
+  }) |> arrange(desc(n_overlap))
+
+  matched_dab <- candidate_dabs$dab[1]
+  message("Augmented file matched to: ", matched_dab,
+          " (", candidate_dabs$n_overlap[1], " overlapping cAbs)")
+
+  orig_long <- screen_long |>
+    filter(dab == matched_dab, cab %in% cab_cols) |>
+    mutate(source = "Original")
+
+  aug_long <- aug_df |>
+    pivot_longer(all_of(cab_cols), names_to = "cab", values_to = "fluor") |>
+    mutate(dab = matched_dab, source = "Augmented")
+
+  overlay_df <- bind_rows(
+    orig_long |> select(dab, cab, target_vector, fluor, source),
+    aug_long  |> select(dab, cab, target_vector, fluor, source)
+  ) |>
+    filter(!is.na(target_vector), target_vector %in% VARIANT_LEVELS) |>
+    mutate(target_vector = factor(target_vector, levels = VARIANT_LEVELS),
+           source        = factor(source, levels = c("Original", "Augmented")))
+
+  p9 <- ggplot(overlay_df, aes(fluor, fill = source, color = source)) +
+    geom_density(alpha = 0.35, linewidth = 0.4) +
+    scale_fill_manual(values  = c(Original = "#4C72B0", Augmented = "#DD8452")) +
+    scale_color_manual(values = c(Original = "#4C72B0", Augmented = "#DD8452")) +
+    facet_grid(target_vector ~ cab, scales = "free_y") +
+    labs(x = "Fluorescence", y = "Density",
+         title = paste0("Augmented vs. original distributions (", matched_dab, ")"),
+         subtitle = "One panel per (cAb x variant); checks whether augmentation preserved the manifold") +
+    theme_bw() +
+    theme(panel.grid.minor = element_blank(),
+          strip.text.x     = element_text(size = 7),
+          legend.position  = "bottom")
+
+  save_fig(p9, "09_augmented_vs_original", width = 14, height = 7)
+  p9
+} else {
+  message("Augmented file not found at ", aug_path, " -- skipping section 9.")
+}
+```
+
+---
+
+# 10. ROC / PR curves (one-vs-rest) for chosen RF models
+
+Re-augments each RF top-dAb final fit on its stored final_test split, stacks
+predicted probabilities across seeds, and draws one-vs-rest ROC and PR curves
+per variant.
+
+```{r fig-10-roc-pr, fig.width=14, fig.height=6}
+roc_pr_data <- map_dfr(TOP_DABS, function(d) {
+  imap_dfr(rf_runs, function(run, seed_idx) {
+    res <- run[[d]]
+    if (is.null(res) || is.null(res$final_fit) || is.null(res$final_split)) return(tibble())
+    test <- testing(res$final_split)
+    aug  <- augment(res$final_fit, new_data = test)
+    prob_cols <- grep("^\\.pred_", colnames(aug), value = TRUE)
+    prob_cols <- setdiff(prob_cols, ".pred_class")
+    aug |> select(target_vector, all_of(prob_cols)) |>
+      mutate(dab = d, seed_idx = seed_idx)
+  })
+}) |>
+  mutate(target_vector = factor(target_vector, levels = VARIANT_LEVELS))
+
+if (nrow(roc_pr_data) > 0) {
+  prob_cols <- grep("^\\.pred_", colnames(roc_pr_data), value = TRUE)
+  prob_cols <- setdiff(prob_cols, ".pred_class")
+
+  roc_df <- map_dfr(VARIANT_LEVELS, function(v) {
+    pcol <- paste0(".pred_", v)
+    if (!pcol %in% prob_cols) return(tibble())
+    map_dfr(TOP_DABS, function(d) {
+      sub <- roc_pr_data |> filter(dab == d)
+      if (nrow(sub) == 0) return(tibble())
+      sub <- sub |> mutate(positive = factor(target_vector == v,
+                                             levels = c(TRUE, FALSE),
+                                             labels = c("yes", "no")))
+      yardstick::roc_curve(sub, truth = positive, !!sym(pcol)) |>
+        mutate(dab = d, variant = v)
+    })
+  }) |>
+    mutate(dab     = factor(dab, levels = TOP_DABS),
+           variant = factor(variant, levels = VARIANT_LEVELS))
+
+  p10 <- ggplot(roc_df, aes(1 - specificity, sensitivity,
+                            color = variant)) +
+    geom_abline(slope = 1, intercept = 0, color = "grey80", linetype = 2) +
+    geom_path(linewidth = 0.7) +
+    scale_color_manual(values = VARIANT_COLORS, name = "Variant (vs. rest)") +
+    coord_equal() +
+    facet_wrap(~ dab, ncol = 4) +
+    labs(x = "1 - Specificity", y = "Sensitivity",
+         title = "RF one-vs-rest ROC curves per top dAb",
+         subtitle = "Predictions stacked across 3 seeds; final-test splits") +
+    theme_bw() +
+    theme(panel.grid.minor = element_blank(),
+          legend.position  = "bottom")
+
+  save_fig(p10, "10_roc_curves_rf_top", width = 14, height = 7)
+  p10
+} else {
+  message("No RF predictions could be regenerated (final_split/final_fit missing).")
+}
+```
+
+---
+
+# 11. Calibration plot (RF, top dAbs combined)
+
+For each variant, bin the predicted probability and compare to the observed
+fraction. Built from the same `roc_pr_data` as section 10.
+
+```{r fig-11-calibration, fig.width=10, fig.height=5}
+if (exists("roc_pr_data") && nrow(roc_pr_data) > 0) {
+  prob_cols <- grep("^\\.pred_", colnames(roc_pr_data), value = TRUE)
+  prob_cols <- setdiff(prob_cols, ".pred_class")
+
+  calib_df <- map_dfr(VARIANT_LEVELS, function(v) {
+    pcol <- paste0(".pred_", v)
+    if (!pcol %in% prob_cols) return(tibble())
+    roc_pr_data |>
+      transmute(prob = .data[[pcol]],
+                outcome = as.integer(target_vector == v),
+                variant = v) |>
+      mutate(bin = cut(prob,
+                       breaks = seq(0, 1, by = 0.1),
+                       include.lowest = TRUE)) |>
+      group_by(variant, bin) |>
+      summarise(mean_pred = mean(prob),
+                obs_rate  = mean(outcome),
+                n         = n(),
+                .groups   = "drop") |>
+      filter(n >= 5)
+  }) |> mutate(variant = factor(variant, levels = VARIANT_LEVELS))
+
+  p11 <- ggplot(calib_df, aes(mean_pred, obs_rate,
+                              color = variant, size = n)) +
+    geom_abline(slope = 1, intercept = 0, color = "grey70", linetype = 2) +
+    geom_line(aes(group = variant), linewidth = 0.5, show.legend = FALSE) +
+    geom_point(alpha = 0.85) +
+    scale_color_manual(values = VARIANT_COLORS, name = "Variant") +
+    scale_size_continuous(name = "Bin count", range = c(2, 6)) +
+    coord_equal(xlim = c(0, 1), ylim = c(0, 1)) +
+    labs(x = "Mean predicted probability", y = "Observed positive rate",
+         title = "RF calibration per variant (top dAbs combined, 3 seeds)",
+         subtitle = "Diagonal = perfect calibration") +
+    theme_bw() +
+    theme(panel.grid.minor = element_blank())
+
+  save_fig(p11, "11_calibration_rf", width = 10, height = 5)
+  p11
+}
+```
+
+---
+
+# 12. Pair importance x dAb panel (LASSO)
+
+For each top dAb, the top 8 cAb pairs by mean LASSO importance across seeds,
+with selection-frequency overlay.
+
+```{r fig-12-pair-importance, fig.width=14, fig.height=8}
+imp_df <- extract_slot(lasso_runs, "feature_ranking") |>
+  mutate(dab = str_extract(feature, "^dAb[0-9]+"),
+         cab = str_remove(feature, "^dAb[0-9]+_")) |>
+  filter(dab %in% TOP_DABS) |>
+  group_by(dab, cab) |>
+  summarise(mean_imp = mean(importance),
+            sd_imp   = sd(importance),
+            .groups  = "drop")
+
+# Selection frequency: how many (seed) runs picked it into best_features
+sel_freq_lasso <- selected_features |>
+  filter(method == "LASSO", dab %in% TOP_DABS) |>
+  group_by(dab, cab) |>
+  summarise(n_sel = n(), .groups = "drop")
+
+imp_top <- imp_df |>
+  group_by(dab) |>
+  slice_max(mean_imp, n = 8, with_ties = FALSE) |>
+  ungroup() |>
+  left_join(sel_freq_lasso, by = c("dab", "cab")) |>
+  mutate(n_sel = replace_na(n_sel, 0L),
+         dab   = factor(dab, levels = TOP_DABS))
+
+# Per-facet ordering trick: prefix dab so factor levels stay unique-by-facet,
+# then use the cAb name as the visible y-axis label via a labeller.
+imp_top <- imp_top |>
+  mutate(label = paste(dab, cab, sep = "__"),
+         label = fct_reorder(label, mean_imp))
+
+label_lookup <- setNames(imp_top$cab, imp_top$label)
+
+p12 <- ggplot(imp_top, aes(mean_imp, label, fill = factor(n_sel))) +
+  geom_col() +
+  geom_errorbar(aes(xmin = pmax(0, mean_imp - sd_imp),
+                    xmax = mean_imp + sd_imp),
+                width = 0.3, color = "grey30") +
+  geom_text(aes(x = mean_imp + sd_imp,
+                label = sprintf("%.2f", mean_imp)),
+            hjust = -0.15, size = 2.6, color = "grey20") +
+  scale_y_discrete(labels = label_lookup) +
+  scale_x_continuous(expand = expansion(mult = c(0, 0.18))) +
+  scale_fill_brewer(palette = "Blues", name = "Selected in\n# seeds (0-3)",
+                    drop = FALSE) +
+  facet_wrap(~ dab, ncol = 4, scales = "free") +
+  labs(x = "Mean |LASSO coefficient| across seeds",
+       y = NULL,
+       title = "Top 8 cAb partners by LASSO importance per top dAb",
+       subtitle = "Bar fill = selection frequency in best_features across 3 seeds; error bars = SD; numeric label = mean |coef|") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank(),
+        axis.text.y = element_text(size = 8),
+        strip.text = element_text(face = "bold"))
+
+save_fig(p12, "12_lasso_pair_importance", width = 14, height = 8)
+p12
+```
+
+---
+
+# 14. Compiled performance summary (patchwork)
+
+Stacks the cross-method grid (sect. 1) and the method x dAb heatmap (sect. 2)
+into a single figure for the chapter intro.
+
+```{r fig-14-performance-summary, fig.width=12, fig.height=11}
+p14 <- (p1 + theme(legend.position = "right")) /
+       (p2 + theme(legend.position = "right")) +
+  patchwork::plot_layout(heights = c(1.4, 1)) +
+  patchwork::plot_annotation(
+    tag_levels = "A",
+    title    = "Feature-selection performance summary",
+    subtitle = "(A) Performance vs. feature count by method. (B) Test accuracy by method x dAb."
+  )
+
+save_fig(p14, "14_performance_summary", width = 12, height = 11)
+p14
+```

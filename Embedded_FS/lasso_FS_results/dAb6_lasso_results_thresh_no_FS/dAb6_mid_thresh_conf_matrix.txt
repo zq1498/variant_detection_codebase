@@ -1,0 +1,200 @@
+[[1]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       1     0       2  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[2]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[3]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[4]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       1  2
+
+[[5]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[6]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[7]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[8]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[9]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       1  2
+
+[[10]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[11]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[12]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[13]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       2  1
+
+[[14]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[15]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[16]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[17]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[18]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[19]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       2  1
+
+[[20]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[21]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[22]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       1     0       2  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[23]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[24]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       0  3
+
+[[25]]
+          Reference
+Prediction Beta Delta Omicron WT
+   Beta       3     0       0  0
+   Delta      0     3       0  0
+   Omicron    0     0       3  0
+   WT         0     0       1  2
+
