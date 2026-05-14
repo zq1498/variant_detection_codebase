@@ -4,303 +4,220 @@ output: html_document
 date: "2022-11-20"
 ---
 
-```{r}
+```{r setup, message=FALSE, warning=FALSE}
+library(tidymodels)
 library(tidyverse)
-library(caret)
-library(ggplot2)
-library(stats)
-library(psych)
 library(glmnet)
-library(gmodels)
-library(gridExtra)
-library(doParallel)
-library(roxygen2)
-library(RColorBrewer)
-library(ggpubr)
+library(openxlsx)
 ```
 
-```{r}
-# This file is within the Embedded_FS folder in the variant_detection_codebase
-# parent directory, but it relies on the S_protein_screen_preprocessing.R in 
-# order to run in isolation, so I'm just setting the wd to the parent from which
-# I can call both files. The wd will be reset after this chunk anyway
+```{r load-data}
 setwd("..")
 source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
-source("Embedded_FS/log_regression_accessory_functions.r")
-source("Embedded_FS/lasso_resampling_functions.R")
+source("Embedded_FS/lasso_tidymodels.R")
 split_dab_df_list = main_preprocessor()
 ```
 
-```{r MULTI FS GLM FUNCTION, warning = FALSE}
-# Careful with this function name, dangerously close to glm.control from stats package
-# In this case n_top_features is actually an array of features
-glm_control_multi_fs = function(df,
-                       target,
-                       k1,
-                       k2,
-                       num_repeats,
-                       threshold,
-                       n_top_features = c()
-                       ) {
-  
-  external_perf_df = NULL
-  global_perf_df = NULL
-  
-  external_conf_table_list = list()
-  global_conf_table_list = list()
-  
-  external_opt_model_list = list()
-  global_opt_model_list = list()
-  
-  average_coef_plot_list = list()
-  
-  threshold_df = df %>% filter(Conc. > threshold) %>%
-    select(-c(Conc., Replicates))
-  
-  # Adding a dummy value at index 1 that gets replaced later when I know what 
-  # the max number of features is
-  num_feature_array = c(1, n_top_features)
-  
-  for (rep in 1:num_repeats) {
-    global_kfold = createFolds(threshold_df[[target]], k = k1)
-    
-    for (fold1 in 1:k1) {
-      global_train = threshold_df[-global_kfold[[fold1]], ]
-      global_test = threshold_df[global_kfold[[fold1]], ]
-      
-      external_resample = resampling_function(
-        target = target,
-        dataset = global_train,
-        n_folds = k2,
-        perf_df = external_perf_df,
-        model_list = external_opt_model_list,
-        conf_table_list = external_conf_table_list,
-        transformation = c("scale", "center", "BoxCox")
-      )
-      external_conf_table_list = external_resample$conf_table_list
-      external_opt_model_list = external_resample$opt_model_list
-      external_perf_df = external_resample$perf_df
-
-  # SORTING COEFS AND DOWNSELECTING GLOBAL DF BASED ON EXTERNAL RESAMPLING
-  #   Easier just to call this regardless since it's really fast      
-      coefs_call = get_cv_coefs(external_opt_model_list, plot = T)
-      average_coef_plot_list[[length(average_coef_plot_list) + 1]] = coefs_call$coef_plot
-      average_external_coefs = coefs_call$coef_df
-      
-      average_abs_external_coefs = average_external_coefs %>% mutate_if(is.numeric, abs)
-      
-      sorted_coefs = average_abs_external_coefs %>% select_if(is.numeric) %>%
-        mutate(sum = rowSums(.)) %>%
-        mutate('Pair' = average_abs_external_coefs$Pair) %>%
-        arrange(desc(sum))
-      
-      # Append the max number of features to the n_top_features list
-      max_features = length(sorted_coefs$Pair) # the only other column is the target vector
-      num_feature_array[1] = max_features
-      # Remove any values from the array that are below the max feature number
-      # If this occurs, then at the end of the function, a warning is printed out
-      num_feature_array = num_feature_array[which(num_feature_array <= max_features)]
-
-      global_resample = multi_feature_global_resampling(
-        target = target,
-        train = global_train,
-        test = global_test,
-        sorted_coefs = sorted_coefs,
-        num_feature_list = num_feature_array,
-        perf_df = global_perf_df,
-        model_list = global_opt_model_list,
-        conf_table_list = global_conf_table_list,
-        transformation = c("scale", "center", "BoxCox")
-      )
-      global_conf_table_list = global_resample$conf_table_list
-      global_opt_model_list = global_resample$opt_model_list
-      global_perf_df = global_resample$perf_df
-    }
-  }
-  
-  # Averaging the performance based on the recorded metrics of the external
-  # k-fold cv
-  external_iterations = append(c(1:nrow(external_perf_df)),
-                               c("Average", "Stdev"))
-  global_iterations = append(c(1:nrow(global_perf_df)),
-                             c("Average", "Stdev"))
-
-  external_perf_df = bind_rows(
-    external_perf_df,
-    colMeans(external_perf_df, na.rm = T),
-    sapply(external_perf_df, sd, na.rm = T)
-  )
-  external_perf_df = cbind(external_perf_df, external_iterations)
-  
-  global_perf_df = bind_rows(
-    global_perf_df,
-    colMeans(global_perf_df, na.rm = T),
-    sapply(global_perf_df, sd, na.rm = T)
-  )
-  global_perf_df = cbind(global_perf_df, global_iterations)
-  
-  
-  if(length(num_feature_array) < length(n_top_features)){
-    cat("WARNING: \n The max number of features was below some of the feature numbers your specified")
-  }
-  
-  return(list("external_conf_tables" = external_conf_table_list,
-              "external_opt_models" = external_opt_model_list,
-              "external_performance" = external_perf_df,
-              "global_conf_tables" = global_conf_table_list,
-              "global_opt_models" = global_opt_model_list,
-              "global_performance" = global_perf_df,
-              "sorted_coefs" = sorted_coefs$Pair
-              ))
-}
+```{r run-pipeline}
+# n_param_opt_split = 0: delegates lambda selection to cv.glmnet's internal CV.
+# Preferred here because feature_val_train is ~54 rows — too small for an
+# explicit outer vfold on top of glmnet's own folds.
+all_results = run_lasso_fs_all_dabs(
+  split_dab_df_list,
+  target            = "target_vector",
+  threshold         = 0,
+  prop_final_test   = 0.20,
+  prop_feature_test = 0.20,
+  n_param_opt_split = 0,
+  n_top_features    = c(3, 4, 5, 6, 7, 8, 10),
+  seed              = 2024
+)
 ```
 
-```{r MODEL LOOP, warning=FALSE}
-all_models = model_call_loop(df_list = split_dab_df_list,
-                             model_type = 'lasso_fs',
-                             k1 = 5,
-                             k2 = 5,
-                             num_repeats = 3,
-                             threshold = 0,
-                             n_top_features = c(10, 8, 7, 6, 5, 4, 3)
-                             )
-all_lasso_perf_results = sapply(all_models, function(x) x['global_performance'])
-all_lasso_perf_results
-get_lasso_coefs = function(x){
-  coef_and_plot = get_cv_coefs(get_lasso_coefs)
-  return(coef_and_plot$coef_df)
-}
+```{r compile-results}
+all_run_summaries       = map_dfr(all_results, \(x) x$run_summary)
+all_test_metrics        = map_dfr(all_results, \(x) x$test_metrics)
+all_feature_rankings    = map_dfr(all_results, \(x) x$feature_ranking)
+all_feature_val_results = map_dfr(all_results, \(x) x$feature_val_results)
 
-
-save_metrics(split_dab_df_list, 'global_performance', all_models)
-save_metrics(split_dab_df_list, 'global_coef_df', all_models)
-
-dab_ind = 1
-for (result in all_lasso_perf_results){
-  # dab = split_dab_df_order[dab_ind]
-  res_viz = multi_fs_parser(result, dab)
-  print(res_viz$plot)
-  # ggsave(filename = paste("Performance over num_features (BoxCox): ", dab, ".png"),
-  #        plot = res_viz$plot,
-  #        dpi = 600)
-  dab_ind = dab_ind+1
-}
-```
-```{r}
-all_lasso_models = sapply(all_models, function(x) x['global_opt_models'])
-
-rank_lasso_coefs = function(list_of_results){
-  ranked_pairs = NULL
-  
-  get_lasso_coefs = function(x){
-    coef_and_plot = get_cv_coefs(x)
-    return(coef_and_plot$coef_df)
-  }
-  
-  opt_models = sapply(list_of_results, function(x) x['global_opt_models'])
-  coef_dfs = sapply(opt_models, get_lasso_coefs)
-  return(coef_dfs)
-}
-
-lt = get_cv_coefs(all_lasso_models[[8]], plot = T)
-lt$coef_df
-lasso_coef_test = rank_lasso_coefs(all_models)
-lasso_coef_test
+all_run_summaries
 ```
 
+```{r feature-count-selection, fig.width=12, fig.height=8}
+# Accuracy on feature_val_test across candidate feature counts, per dAb.
+# The selected best_n for each dAb is marked with a point.
+best_n_df = all_run_summaries |> select(dab, best_n_features)
 
-```{r}
-# This function is very poorly written
-# The only way it actually makes sense is to include it in the global resample function
-# otherwise you have no clue what number of pairs you have, what dab you're plotting
-# etc. It's such a pain that I'd rather label 100 plots manually than figure it out
-coef_parser = function(list_of_results) {
-  all_model_list = sapply(list_of_results, function(x) x['global_opt_models'])
-  save_index = 0
-  for (single_dab_models in all_model_list) {
-    sorted_model_list = list()
-    # This is true whenever we have 5 global folds and 3 total repeats
-    num_features_list = length(single_dab_models) / 15
-    for (ind in 1:num_features_list) {
-      ind_max = length(single_dab_models) - (num_features_list - ind)
-      seq_ind = seq(from = ind,
-                    to = ind_max,
-                    by = num_features_list)
-      temp_model_list = single_dab_models[seq_ind]
-      sorted_model_list[[ind]] = temp_model_list
-    }
-    sublist_ind = 1
-    plot_list = list()
-    for (sublist in sorted_model_list) {
-      coef_p = get_cv_coefs(sublist, plot = T)
-      # ggsave(filename = paste("lasso_fs_pair_subsets_", save_index, ".png"), plot = coef_p$coef_plot,
-      #      dpi = 600)
-      print(coef_p$coef_plot)
-      save_index = save_index + 1
-    }
-  }
-}
-
-coef_parser(all_models)
-```
-```{r}
-coef_ranker = function(list_of_results) {
-  ranked_coefs = NULL
-  
-  all_model_list = sapply(list_of_results, function(x) x['global_opt_models'])
-  save_index = 0
-  for (single_dab_models in all_model_list) {
-    sorted_model_list = list()
-    # This is true whenever we have 5 global folds and 3 total repeats
-    num_features_list = length(single_dab_models) / 15
-    for (ind in 1:num_features_list) {
-      ind_max = length(single_dab_models) - (num_features_list - ind)
-      seq_ind = seq(from = ind,
-                    to = ind_max,
-                    by = num_features_list)
-      temp_model_list = single_dab_models[seq_ind]
-      sorted_model_list[[ind]] = temp_model_list
-    }
-    sublist_ind = 1
-    plot_list = list()
-    # Initialize
-    for (sublist in sorted_model_list) {
-      # Sublist is a list of models from the same dAb
-      coef_p = get_cv_coefs(sublist, plot = F)
-      top_pairs = coef_p$coef_df
-      
-      if (is.null(ranked_coefs)){
-        ranked_coefs = top_pairs
-      }
-      else{
-        ranked_coefs = ranked_coefs %>% bind_rows(top_pairs)
-      }
-    }
-  }
-  piv_df = ranked_coefs %>%
-    group_by(Pair) %>%
-    mutate(across(everything(), abs)) %>%
-    summarise(across(everything(), mean, na.rm = T))
-  
-  piv_df$Magnitute = rowMeans(piv_df[,2:5])
-  dab_vector = gsub("_.*", "", piv_df$Pair)
-  cab_vector = gsub(".*_", "", piv_df$Pair)
-  
-  clean_coef_df = data.frame("dAb" = dab_vector,
-                               "cAb" = cab_vector,
-                               "Importance" = piv_df$Magnitute)
-  
-  top_n_pairs = clean_coef_df %>%
-    group_by(dAb) %>%
-    slice_head(n = 10) %>%
-    arrange_at("Importance", desc, .by_group = T) %>%
-    mutate(rank = rank(Importance)) %>% 
-    mutate(Model = 'lasso')
-  
-  return(top_n_pairs)
-}
-
-ranked_lasso_coefs = coef_ranker(all_models)
-ranked_lasso_coefs
+all_feature_val_results |>
+  filter(.metric == "accuracy") |>
+  left_join(best_n_df, by = "dab") |>
+  mutate(selected = n_features == best_n_features) |>
+  ggplot(aes(x = n_features, y = .estimate)) +
+  geom_line(color = "steelblue") +
+  geom_point(aes(shape = selected, size = selected), color = "steelblue") +
+  scale_shape_manual(values = c("FALSE" = 1, "TRUE" = 16)) +
+  scale_size_manual(values  = c("FALSE" = 2, "TRUE" = 4)) +
+  scale_x_continuous(breaks = c(3, 4, 5, 6, 7, 8, 10)) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  facet_wrap(~dab, ncol = 4) +
+  labs(
+    title = "Feature count selection — validation accuracy per dAb",
+    x     = "Number of features",
+    y     = "Accuracy (feature_val_test)",
+    shape = "Selected N",
+    size  = "Selected N"
+  ) +
+  theme_bw() +
+  theme(legend.position = "bottom")
 ```
 
+```{r feature-importance, fig.width=12, fig.height=10}
+# Top 10 pairs by mean absolute LASSO coefficient, per dAb.
+# Importance = mean |coef| across variant classes at best_penalty.
+# Prefixing dab name to feature creates globally unique factor levels while
+# still allowing per-facet ordering via arrange + factor(..., levels = .).
+all_feature_rankings |>
+  group_by(dab) |>
+  slice_max(importance, n = 10, with_ties = FALSE) |>
+  arrange(dab, importance) |>
+  ungroup() |>
+  mutate(
+    feat_key = paste0(dab, "___", feature),
+    feat_key = factor(feat_key, levels = feat_key)
+  ) |>
+  ggplot(aes(x = feat_key, y = importance)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  scale_x_discrete(labels = \(x) sub(".*___", "", x)) +
+  facet_wrap(~dab, scales = "free", ncol = 4) +
+  labs(
+    title = "Top 10 antibody pairs by LASSO importance, per dAb",
+    x     = NULL,
+    y     = "Mean |coefficient|"
+  ) +
+  theme_bw()
+```
+
+```{r selected-features}
+# The specific pairs chosen for the final model of each dAb.
+all_run_summaries |>
+  select(dab, best_n_features, best_features) |>
+  unnest_longer(best_features) |>
+  group_by(dab, best_n_features) |>
+  summarise(features = paste(best_features, collapse = ", "), .groups = "drop")
+```
+
+```{r test-performance}
+# Final accuracy and kappa on the held-out FINAL_TEST set, per dAb.
+all_test_metrics |>
+  select(dab, .metric, .estimate, seed) |>
+  pivot_wider(names_from = .metric, values_from = .estimate) |>
+  arrange(desc(accuracy))
+```
+
+```{r test-performance-plot, fig.width=8, fig.height=5}
+all_test_metrics |>
+  filter(.metric == "accuracy") |>
+  ggplot(aes(x = reorder(dab, .estimate), y = .estimate)) +
+  geom_col(fill = "steelblue") +
+  geom_hline(yintercept = 0.25, linetype = "dashed", color = "gray50") +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  coord_flip() +
+  labs(
+    title = "Final test accuracy per dAb (LASSO-FS, seed 2024)",
+    x     = NULL,
+    y     = "Accuracy (final holdout)"
+  ) +
+  theme_bw()
+```
+
+```{r confusion-matrices}
+# Print confusion matrix for each dAb.
+iwalk(all_results, function(result, dab_name) {
+  cat("\n===", dab_name, "===\n")
+  print(result$test_conf_mat)
+})
+```
+
+```{r multi-seed, warning=FALSE}
+# Run across three seeds to assess stability of feature selection and performance.
+# This takes ~3× as long as a single run.
+seeds = c(2024, 2025, 2026)
+
+seed_runs = map(seeds, \(s) {
+  message("Seed: ", s)
+  run_lasso_fs_all_dabs(split_dab_df_list,
+                        target            = "target_vector",
+                        threshold         = 0,
+                        n_param_opt_split = 0,
+                        n_top_features    = c(3, 4, 5, 6, 7, 8, 10),
+                        seed              = s)
+})
+
+multi_seed_summaries = map(seed_runs, \(r) map_dfr(r, \(x) x$run_summary)) |> bind_rows()
+multi_seed_metrics   = map(seed_runs, \(r) map_dfr(r, \(x) x$test_metrics)) |> bind_rows()
+```
+
+```{r seed-stability, fig.width=8, fig.height=5}
+# Accuracy distribution across seeds per dAb — reveals which dAbs are stable.
+multi_seed_metrics |>
+  filter(.metric == "accuracy") |>
+  ggplot(aes(x = reorder(dab, .estimate, median), y = .estimate)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(aes(color = factor(seed)), width = 0.15, size = 2) +
+  scale_y_continuous(limits = c(0, 1), labels = scales::percent) +
+  scale_color_brewer(palette = "Set1", name = "Seed") +
+  coord_flip() +
+  labs(
+    title = "Test accuracy across seeds per dAb",
+    x     = NULL,
+    y     = "Accuracy (final holdout)"
+  ) +
+  theme_bw()
+```
+
+```{r feature-frequency, fig.width=12, fig.height=10}
+# How often each pair appears in the selected feature set across seeds, per dAb.
+multi_seed_summaries |>
+  unnest_longer(best_features) |>
+  count(dab, best_features, name = "seed_count") |>
+  group_by(dab) |>
+  slice_max(seed_count, n = 10, with_ties = FALSE) |>
+  arrange(dab, seed_count) |>
+  ungroup() |>
+  mutate(
+    feat_key = paste0(dab, "___", best_features),
+    feat_key = factor(feat_key, levels = feat_key)
+  ) |>
+  ggplot(aes(x = feat_key, y = seed_count)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  scale_x_discrete(labels = \(x) sub(".*___", "", x)) +
+  scale_y_continuous(breaks = seq_len(length(seeds))) +
+  facet_wrap(~dab, scales = "free", ncol = 4) +
+  labs(
+    title = "Feature selection frequency across seeds (top 10 per dAb)",
+    x     = NULL,
+    y     = "# seeds selected"
+  ) +
+  theme_bw()
+```
+
+```{r save-results}
+# Write per-dAb performance and selected features to the lasso_FS_results folder.
+dir.create("Embedded_FS/lasso_FS_results", showWarnings = FALSE)
+
+performance_wide = multi_seed_metrics |>
+  filter(.metric %in% c("accuracy", "kap")) |>
+  pivot_wider(names_from = .metric, values_from = .estimate) |>
+  arrange(dab, seed)
+
+feature_summary = multi_seed_summaries |>
+  unnest_longer(best_features) |>
+  select(dab, seed, best_n_features, best_features)
+
+write.xlsx(
+  list(performance = performance_wide, features = feature_summary),
+  file = "Embedded_FS/lasso_FS_results/lasso_tidymodels_results.xlsx"
+)
+```

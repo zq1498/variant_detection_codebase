@@ -57,11 +57,40 @@ augmented_18_data_2 %>% filter(Conc. == 7.8125)%>% select(starts_with(c("target_
   facet_wrap("cab")
 ```
 
+```{r}
+# Testing group_vfold_cv
+combined_augmented_data
+combined_threshold_data = combined_augmented_data %>% filter(Conc. != 0)
+
+combined_threshold_data$Conc. = as.factor(combined_threshold_data$Conc.)
+
+
+
+split_test = group_vfold_cv(combined_threshold_data, group = Conc., strata = target_vector,
+                            v=1)
+combined_threshold_data
+combined_threshold_data %>% group_by(target_vector, Replicate) %>% summarise(n = n())
+```
+
+
 ```{r ALL THE MOST UP TO DATE OUTLIER HANDLING FUNCTIONS}
 # Provided a dataset, this function can identify which values are outliers based
 # on the distributions of values with the same concentration and variant. I then
 # provides a data frame that contains relevant information about identified
 # outliers that can be used to find and replace that outlier later on
+
+# REMEMBER: outlier imputation should be done FOLLOWING data splitting (i.e. via
+# )
+
+#' check_outliers
+#'
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration 
+#' @param alpha p-value (derived from a grubb's test) below which outleirs should be removed 
+#'
+#' @return flag_df, a data frame containing 
+#' @export
+#'
+#' @examples
 check_outliers = function(dataset, alpha = 0.05) {
   flag_df = NULL
   current_variant = unique(dataset$target_vector)
@@ -71,10 +100,11 @@ check_outliers = function(dataset, alpha = 0.05) {
   cab_names = colnames(cols_to_check)
   col_num = 1
   
-  # Adapting function to replace grubbs.test. Basically, I need to set a p-value
+  
+  # Outlier detection with 3*sd (tukey fence) instead of grubbs test. A manual set a p-value
   # to 0.01 if a value within the array is higher or lower than 3D*mean, then
-  # return 'higher' or 'lower' depending on what value (probably need to choose the
-  # value with the greatest distance from the mean so I don't get two returns)
+  # return 'higher' or 'lower' depending on what value is returned
+  # TO DO: This should probably be a separate function that's called elsewhere
   # for (array in cols_to_check){
   #   arr_mean = mean(array, na.rm=T)
   #   arr_sd = sd(array, na.rm = T)
@@ -149,6 +179,15 @@ check_outliers = function(dataset, alpha = 0.05) {
 }
 
 # Provided with a data frame containing information about individual outliers (called flag_df here), it will find those outlier values and add additional information to the original flag_df, mainly the specific outlier value and the mean of the group without the outlier included
+#' Title
+#'
+#' @param flag_df 
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration
+#'
+#' @return
+#' @export
+#'
+#' @examples
 enhance_flag_df = function(flag_df, dataset){
   # Loop over all rows of flag df, then build an array row by row that contains
   # the max and mean (na.rm = T), then add that to the original data frame and 
@@ -202,6 +241,16 @@ enhance_flag_df = function(flag_df, dataset){
 # all outlier values and replace them with the mean value or NA if you'd like to
 # use an alternative imputation method. It returns a dataset of the same
 # dimensions as the original, with the outlier values changed.
+#' Title
+#'
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration
+#' @param enhanced_flag_df 
+#' @param impute_method 
+#'
+#' @return
+#' @export
+#'
+#' @examples
 replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
   row_numbers = 1:nrow(dataset)
   dataset = bind_cols("row_number" = row_numbers, dataset)
@@ -245,7 +294,18 @@ replace_outliers = function(dataset, enhanced_flag_df, impute_method='mean'){
 
 #------------------------------------------------------------------------------#
 # Outlier control function
+#' main_outliers_detection_function: main wrapper function for all outlier detection
+#' functions. Calls check_outliers, enhance_flag_df, and replace_outliers
+#' @param dataset a data frame all relevant cab columns, as well as target vector and  concentration
+#' @param threshold p-value (from a grubb's test) below which outliers should be considered a statistical outlier 
+#' @param impute imputations method to use, currently supports mean imputation 
+#'
+#' @return
+#' @export
+#'
+#' @examples
 main_outliers_detection_function = function(dataset, threshold, impute = 'mean') {
+  
   outlier_test_df_list = dataset %>% filter(Conc. > threshold) %>% group_by(Conc., target_vector) %>% group_split()
   flag_df = NULL
   
@@ -302,6 +362,7 @@ DR_Viz(augmented_18_data_1)
 DR_Viz(augmented_18_data_2)
 DR_Viz(combined_augmented_data)
 DR_Viz(outlier_removed_df)
+DR_viz(sens_opt_df)
 ```
 
 ```{r PERCENT CORRECT VISUALIZATION}
@@ -370,6 +431,7 @@ juice(pca_prep) %>%
   # geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
   labs(color = NULL)
 ```
+
 ```{r}
 # UMAP clustering
 umap_rec <- recipe(~., data = combined_augmented_data) %>%
@@ -380,13 +442,14 @@ umap_rec <- recipe(~., data = combined_augmented_data) %>%
 
 umap_prep <- prep(umap_rec)
 
-# So 
 juice(umap_prep) %>%
   ggplot(aes(UMAP1, UMAP2, label = target_vector)) +
   geom_point(aes(color = target_vector), alpha = 0.7, size = 2) +
   geom_text(check_overlap = TRUE, hjust = "inward", family = "IBMPlexSans") +
   labs(color = NULL)
 ```
+
+
 
 ```{r model training}
 # Random forest model - dAb18
@@ -398,7 +461,7 @@ augmented_random_forest_model = function(dataset,
                                          upper_thresh=245){
   pred_concs = NULL
   
-  # Thresholding around 1 ng/ml - corresponds to a threshold of 7.14 pM
+  # Thresholding around 1 ng/ml - corresponds to a threshold of ~20 pM
   dataset = dataset %>% filter(Conc. > lower_thresh & Conc. < upper_thresh) %>% select(-Replicate, -cAb10)
   folds = createFolds(dataset[[target]], k = k_folds)
   train_control = trainControl(method = "repeatedcv",
@@ -484,12 +547,11 @@ augmented_18_data_2
 
 first_augment_rf = augmented_random_forest_model(dataset = augmented_18_data_1,
                               target = "target_vector",
-                              k_folds = 10,
-                              model_type = "rf")
+                              k_folds = 5,
+                              model_type = "svmRadial")
 
 first_augment_perc_correct_rf = percent_correct_visualization(first_augment_rf, '#1D6363')
 first_augment_perc_correct_rf = first_augment_perc_correct_rf + labs(title='First set of augmented data', subtitle = 'Conc. Threshold = 0.9 ng/ml')
-first_augment_perc_correct_rf
 # ggsave("first_augment_perc_correct_rf_09ngml_4.png", first_augment_perc_correct_rf)
 
 second_augment = augmented_random_forest_model(dataset = augmented_18_data_2,
@@ -846,6 +908,11 @@ params = list(
   # 
   
 ```
+```{r}
+data(agaricus.train, package='xgboost')
+train <- agaricus.train
+train$data
+```
 
 ```{r}
 # Load the Iris dataset
@@ -889,6 +956,17 @@ predictions <- predict(xgb_model, dtest)
 # Evaluate the model for multi-class classification
 accuracy <- mean(predictions == y_test)
 cat("Accuracy:", accuracy, "\n")
+```
+
+```{r dab19 data handling}
+augmented_dab19_data = read.csv("augmented_dab19_data.csv")
+augmented_dab19_data = augmented_dab19_data %>% select(-X) %>% mutate(target_vector = case_when(
+  target_vector == "Omi" ~ "Omicron",
+  .default = target_vector
+))
+augmented_dab18_data
+og_dab18_data = augmented_dab18_data[289:384,]
+og_dab19_data = augmented_dab19_data[289:384,]
 ```
 
 ```{r original EDA}

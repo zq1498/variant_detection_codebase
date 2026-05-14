@@ -5,12 +5,77 @@ date: "2024-01-04"
 ---
 
 ```{r setup, include=FALSE}
-library(dplyr)
+library(tidyverse)
 ```
 
 ```{r}
-first_half = read.csv("Data_aug_4")
-second_half = read.csv("Data_aug_4_pt2")
+raw_data = read.csv("sensitivity_opt.csv")
+
+colnames(raw_data)[1] = "Slide"
+
+CONCS = c(rep(10, 3), rep(1, 3), rep(0.5, 3), rep(0.25, 3), rep(0.1, 3), rep(0.05, 3), rep(0.01, 3), rep(0, 3))
+
+cabs = c("cAb7", "cAb8", "cAb9", "cAb10", "cAb14", "cAb15", "cAb20", "cAb21", "cAb25", "cAb26")
+
+replicate_num = rep(c(1,2,3), 8)
 ```
+
+```{r}
+processed_data = raw_data %>% 
+  select(c('Slide', 'Block', 'Row', 'F635.Mean', 'B635.Mean')) %>% 
+  mutate(BackSubtractMean = F635.Mean - B635.Mean) %>% 
+  mutate(BackSubtractMean =  case_when(
+    BackSubtractMean < 1 ~ 1,
+    .default = BackSubtractMean
+  )) %>% 
+  select(-c(F635.Mean, B635.Mean)) %>% 
+  group_by(Slide, Block, Row)
+  
+summary_rows = processed_data %>% 
+  # Remove outliers
+  summarise(avg_fluorescence = mean(BackSubtractMean),
+            std_fluorescence = sd(BackSubtractMean),
+            )
+
+# change the value of tukey fence to modify the stringency of outlier grouping
+tukey_fence = 3
+joined_data = left_join(processed_data, summary_rows, by = c("Slide", "Block", "Row"))
+joined_data = joined_data %>% mutate(SD_fence = std_fluorescence * tukey_fence,
+                       checked_val = 
+                         ifelse(BackSubtractMean < avg_fluorescence - SD_fence | 
+                                  BackSubtractMean > avg_fluorescence + SD_fence, 
+                         avg_fluorescence, 
+                         BackSubtractMean))
+
+# This tells you the value of the observation that's been changed
+setdiff(processed_data$BackSubtractMean, joined_data$checked_val)
+
+processed_data$BackSubtractMean = joined_data$checked_val
+
+# Recompute means
+processed_data = processed_data %>% 
+  summarise(avg_fluorescence = mean(BackSubtractMean))
+processed_data$replicate = replicate_num[processed_data$Block]
+processed_data$Block = CONCS[processed_data$Block]
+processed_data$Row = cabs[processed_data$Row]
+
+processed_data
+processed_data = processed_data %>% 
+  rename(c(Conc. = "Block", cAb = "Row", label = "Slide")) %>% 
+  ungroup()
+
+unique(processed_data$avg_fluorescence)
+length(unique(processed_data$avg_fluorescence))
+
+processed_data$target_vector = gsub("_(.*)", "", processed_data$label, perl=T)
+processed_data
+cleaned_data = processed_data %>% pivot_wider(names_from = "cAb",
+                                              values_from = 'avg_fluorescence')
+cleaned_data
+
+# write.csv(cleaned_data, file = 'processed_sensitivity_opt_data.csv', row.names = F)
+```
+
+
 
 

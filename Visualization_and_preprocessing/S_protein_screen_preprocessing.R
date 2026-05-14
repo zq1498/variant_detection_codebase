@@ -24,7 +24,7 @@ dose_response_check = function(dataframe, cols_to_check, target_vector){
   }
   
   dr_check_tapply = function(col){
-    tapply_index = dataframe[target_vector]
+    tapply_index = dataframe[[target_vector]]
     dif_bool = tapply(col, tapply_index, dr_check2)
     if(any(dif_bool == TRUE)){
       return(T)
@@ -38,7 +38,7 @@ dose_response_check = function(dataframe, cols_to_check, target_vector){
   dr_cols = sapply(dataframe[cols_to_check], dr_check_tapply)
   dr_pairs = names(dr_cols[dr_cols == T])
   dr_df = dataframe[dr_pairs]
-  ancillary_cols = dataframe %>% dplyr::select(-cols_to_check)
+  ancillary_cols = dataframe %>% dplyr::select(-all_of(cols_to_check))
   dr_df = cbind(ancillary_cols, dr_df)
   return(dr_df)
 }
@@ -50,7 +50,7 @@ dose_response_check = function(dataframe, cols_to_check, target_vector){
 # significant correlations.
 
 cat_score_downselect = function(dataframe, cols_to_exclude, sig_level, target_vector){
-  numeric_df = dataframe %>% dplyr::select(-cols_to_exclude)
+  numeric_df = dataframe %>% dplyr::select(-all_of(cols_to_exclude))
   
   cat_matrix = catscore(Xtrain = as.matrix(numeric_df), L = dataframe[[target_vector]])
   
@@ -87,7 +87,7 @@ split_dAb_dfs = function(dataframe_to_split, cols_to_exclude){
   # each will eventually be rebound to the split dataframes: list of strings
   # :return: a list where each element is a dataframe containing only the information
   # from a single dAb
-  numeric_screen = dataframe_to_split %>% dplyr::select(-cols_to_exclude)
+  numeric_screen = dataframe_to_split %>% dplyr::select(-all_of(cols_to_exclude))
   pair_names = colnames(numeric_screen)
   excluded_cols = dataframe_to_split[cols_to_exclude]
   
@@ -98,13 +98,14 @@ split_dAb_dfs = function(dataframe_to_split, cols_to_exclude){
   dAb_dataframe_list = list()
   dataframe_list_ind = 1
   for (dAb in dAb_names){
-    dAb_cols = numeric_screen[str_detect(pair_names, dAb)]
+    dAb_cols = numeric_screen[str_detect(pair_names, paste0(dAb, "_"))]
     split_dab_df = cbind(excluded_cols, dAb_cols)
     dAb_dataframe_list[[dataframe_list_ind]] = split_dab_df
     
     dataframe_list_ind = dataframe_list_ind + 1
   }
   
+  names(dAb_dataframe_list) = dAb_names
   return(dAb_dataframe_list)
 
 }

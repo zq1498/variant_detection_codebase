@@ -1,0 +1,163 @@
+---
+title: "Untitled"
+output: html_document
+date: "2024-02-06"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(tidymodels)
+library(embed)
+```
+
+```{r}
+sens_opt_df = read.csv('data/processed_sensitivity_opt_data.csv')
+sens_opt_df = sens_opt_df %>% mutate(across(starts_with("cAb"), log10)) 
+sens_opt_df$label = gsub("^(.*?)_", "", sens_opt_df$label, perl=T)
+sens_opt_df_list = split(sens_opt_df %>% select(-c(replicate)), sens_opt_df$label)
+sens_opt_df
+```
+
+```{r warning=FALSE}
+DR_Viz = function(dataset){
+  std.err = function(x, na.rm = T) sd(x, na.rm = T)/sqrt(length(x))
+  
+  dataset %>% select(-label) %>% 
+  pivot_longer(cols = -c(target_vector, Conc.),
+                   names_to = 'pairs',
+                   values_to = 'fluorescence') %>% 
+  group_by(Conc., target_vector, pairs) %>%
+  summarise(average_fluorescence = mean(fluorescence),
+            se = std.err(fluorescence)) %>% 
+  ggplot(aes(x=Conc., y=average_fluorescence, color = target_vector))+
+  geom_point()+
+  geom_line()+
+  labs(title = paste0(dataset$label, " Dose Response"),
+       x = 'Spike Protein Concentration (ng/mL)',
+       y = "Log(Fluorescence) (A.U.)")+
+  geom_errorbar(aes(ymin=average_fluorescence-se, ymax = average_fluorescence+se), width = 0.2)+
+  facet_wrap('pairs', scales = 'free')+
+  scale_y_continuous(limits = c(0,5))+
+  scale_x_log10() +
+  theme_classic()
+}
+dr_graph_list = lapply(sens_opt_df_list, DR_Viz)
+
+filenames = str_c(names(dr_graph_list), ".png")
+pwalk(list(filenames, dr_graph_list),
+      ggsave,
+      path = 'sens_opt_dr_plots')
+```
+
+```{r}
+caluclate_dol = function(list_of_dfs){
+  for (df in list_of_dfs){
+    
+  }
+}
+
+test_df = sens_opt_df_list[[1]]
+test_df
+sens_opt_df %>% filter(Conc. == 0) %>% 
+  pivot_longer(cols = -c(target_vector, Conc., label),
+               names_to = "pairs",
+               values_to = "fluorescence") %>% 
+               group_by(label, target_vector, Conc., pairs) %>% 
+               summarise(mean_intensity = mean(fluorescence),
+                         sd_intensity = sd(fluorescence)) %>% 
+  mutate(lod = mean_intensity + 3*sd_intensity)
+
+```
+
+```{r}
+combined_augment_data = read.csv("Embedded_FS/combined_augmented_data.csv")
+combined_augment_data = combined_augment_data %>% select(-c(Replicate, cAb13))
+condition_label = sens_opt_df$label
+sens_opt_df_umap = sens_opt_df %>% select(-c(label, replicate))
+condition_plus_target = paste0(sens_opt_df_umap$target_vector, "_", condition_label)
+
+# Because I'm not sure if UMAP can be precomputed then applied to a test set
+# a quick fix
+
+# UMAP visualization
+umap_rec = recipe(~., data = combined_augment_data %>% filter(Conc. >= 0.01 & Conc. <= 250)) %>% 
+  update_role(c(Conc., target_vector), new_role = "id") %>% 
+  step_normalize(all_predictors()) %>% 
+  step_umap(all_predictors(),
+            min_dist = 0.05)
+
+umap_prep = prep(umap_rec)
+
+# Here I construct the UMAP embedding by first training on the augmented data, then
+# "predicting" on the new data. NOTE: I construct the manifold representation
+# with ALL variants, then just filter out WT and Beta to make the visualization less cluttered
+combined_data_umap = bake(umap_prep, new_data = NULL) %>% 
+  filter(target_vector == "Beta" | target_vector == "WT") %>% 
+  ggplot(aes(UMAP1, UMAP2, label = round(Conc., 3)))+
+  geom_point(aes(color = target_vector))+
+  geom_text(check_overlap = T, hjust = "inward")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()+
+  labs(title = "UMAP embedding of augmented data embedding")
+
+sens_opt_umap_conc_label = bake(umap_prep, new_data = sens_opt_df_umap) %>% 
+  ggplot(aes(UMAP1, UMAP2, label = Conc.))+
+  geom_point(aes(color = condition_label))+
+  geom_text(check_overlap = T, hjust = "inward")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()+
+  labs(title = "UMAP embedding of sensitivity data projected onto augmented data embedding")
+
+sens_opt_umap_conc_alpha = bake(umap_prep, new_data = sens_opt_df_umap) %>% 
+  ggplot(aes(UMAP1, UMAP2, alpha = Conc., label = target_vector))+
+  geom_point(aes(color = condition_label))+
+  geom_text(check_overlap = T, hjust = "inward")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()
+
+# To compute this represenation, I include the new data when constructing the intial embedding
+sens_opt_combined_data = sens_opt_df_umap
+sens_opt_combined_data$target_vector = condition_plus_target
+sens_opt_combined_data = bind_rows(sens_opt_combined_data, combined_augment_data) %>% 
+  filter(Conc. >= 0.01 & Conc. <= 250)
+
+umap_rec_combined = recipe(~., data = sens_opt_combined_data) %>% 
+  update_role(c(Conc., target_vector), new_role = "id") %>% 
+  step_normalize(all_predictors()) %>% 
+  step_umap(all_predictors(),
+            min_dist = 0.1)
+
+umap_prep_combined = prep(umap_rec_combined)
+
+
+combined_umap_test = bake(umap_prep_combined, new_data = NULL) %>% 
+  filter(target_vector != "Omicron" & target_vector != "Delta") 
+
+beta_combined_umap_test = combined_umap_test %>% filter(str_detect(target_vector, "Beta"))
+WT_combined_umap_test = combined_umap_test %>% filter(str_detect(target_vector, "WT"))
+
+sens_opt_combined_beta_umap = beta_combined_umap_test %>% 
+  ggplot(aes(UMAP1, UMAP2, label = round(Conc., 3)))+
+  geom_point(aes(color = target_vector), size = 2)+
+  geom_text(check_overlap = T, hjust = "inward")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()+
+  labs(title = 'UMAP embedding of augmented data and sensitivity opt data (Beta)')
+
+sens_opt_combined_wt_umap = WT_combined_umap_test %>% 
+  ggplot(aes(UMAP1, UMAP2, label = round(Conc., 3)))+
+  geom_point(aes(color = target_vector), size = 2)+
+  geom_text(check_overlap = T, hjust = "inward")+
+  scale_color_brewer(palette = "Dark2")+
+  theme_classic()+
+  labs(title = "UMAP embedding of augmented data and sensitivity opt data (WT)")
+
+filename_list = c('combined_data_umap', 'sens_opt_umap_conc_label', 'sens_opt_umap_conc_alpha', 'sens_opt_combined_beta_umap', 'sens_opt_combined_wt_umap')
+plots = list(combined_data_umap, sens_opt_umap_conc_label, sens_opt_umap_conc_alpha, sens_opt_combined_beta_umap, sens_opt_combined_wt_umap)
+filename_list = str_c(filename_list, ".png")
+
+pwalk(list(filename_list, plots),
+      ggsave,
+      path = 'sensitivity_umap_plots')
+```
+

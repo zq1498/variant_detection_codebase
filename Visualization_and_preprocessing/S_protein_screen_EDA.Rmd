@@ -1,0 +1,370 @@
+---
+title: "S_protein_screen_EDA"
+output: html_document
+date: "2026-05-14"
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggridges)
+library(ggcorrplot)
+library(patchwork)
+library(scales)
+library(uwot)        # UMAP
+library(RColorBrewer)
+```
+
+```{r load-data}
+source("Visualization_and_preprocessing/S_protein_screen_preprocessing.R")
+
+split_dabs <- main_preprocessor()
+
+# Long-format frame across every dAb in split_dabs.
+# Each row is one (Conc., Replicates, target_vector, dAb, cAb, fluorescence) observation.
+long_all <- map_dfr(split_dabs, function(df) {
+  df %>%
+    pivot_longer(
+      cols = -c(Conc., Replicates, target_vector),
+      names_to = "pair",
+      values_to = "fluorescence"
+    ) %>%
+    separate(pair, into = c("dAb", "cAb"), sep = "_", remove = FALSE)
+})
+
+# Wide-format frame on the union of all dose-response-passing pairs.
+# Used for PCA/UMAP across the full predictor space.
+wide_all <- reduce(
+  map(split_dabs, ~ .x %>% select(-Conc., -Replicates, -target_vector)),
+  bind_cols
+)
+wide_meta <- split_dabs[[1]] %>% select(Conc., Replicates, target_vector)
+wide_all <- bind_cols(wide_meta, wide_all)
+
+variant_levels <- levels(wide_all$target_vector)
+n_variants <- length(variant_levels)
+variant_palette <- setNames(
+  brewer.pal(max(3, n_variants), "Set1")[seq_len(n_variants)],
+  variant_levels
+)
+
+output_dir <- "Visualization_and_preprocessing/Data_viz/EDA"
+dir.create(output_dir, showWarnings = FALSE, recursive = TRUE)
+```
+
+# Distribution overview
+
+```{r ridges-by-pair, fig.width=14, fig.height=10, warning=FALSE, message=FALSE}
+# Ridgeline of log-fluorescence per pair, stacked by variant, faceted by dAb.
+ridge_by_dab <- long_all %>%
+  ggplot(aes(x = fluorescence, y = cAb, fill = target_vector)) +
+  geom_density_ridges(alpha = 0.55, scale = 1.2, rel_min_height = 0.01) +
+  facet_wrap(~ dAb, scales = "free_y") +
+  scale_fill_manual(values = variant_palette, name = "Variant") +
+  labs(
+    title = "Log-fluorescence ridgelines per capture antibody",
+    subtitle = "Faceted by detection antibody; one ridge per variant",
+    x = "Log fluorescence (A.U.)",
+    y = "Capture antibody"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "ridges_by_dab.png"), ridge_by_dab,
+       dpi = 320, width = 14, height = 10)
+ridge_by_dab
+```
+
+```{r ridges-by-conc, fig.width=14, fig.height=10, warning=FALSE, message=FALSE}
+# Same ridgelines but stacked by concentration to show dose response shape.
+ridge_by_conc <- long_all %>%
+  mutate(Conc_f = factor(signif(Conc., 3))) %>%
+  ggplot(aes(x = fluorescence, y = Conc_f, fill = stat(x))) +
+  geom_density_ridges_gradient(scale = 1.4, rel_min_height = 0.01) +
+  facet_wrap(~ dAb, scales = "free_y") +
+  scale_fill_viridis_c(option = "C", name = "Log fluor.") +
+  labs(
+    title = "Dose-stratified log-fluorescence distributions",
+    subtitle = "Faceted by detection antibody; rows are concentrations (ng/ml)",
+    x = "Log fluorescence (A.U.)",
+    y = "Concentration"
+  ) +
+  theme_minimal(base_size = 11)
+
+ggsave(file.path(output_dir, "ridges_by_conc.png"), ridge_by_conc,
+       dpi = 320, width = 14, height = 10)
+ridge_by_conc
+```
+
+```{r boxplot-by-variant, fig.width=14, fig.height=10, warning=FALSE}
+# Faceted box plots: variant on x, fluorescence on y, one panel per pair.
+box_by_pair <- long_all %>%
+  ggplot(aes(x = target_vector, y = fluorescence, fill = target_vector)) +
+  geom_boxplot(outlier.size = 0.4, alpha = 0.7) +
+  facet_wrap(~ pair, scales = "free_y") +
+  scale_fill_manual(values = variant_palette, guide = "none") +
+  labs(
+    title = "Fluorescence by variant for every dose-responsive pair",
+    x = "Variant",
+    y = "Log fluorescence (A.U.)"
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(output_dir, "boxplots_by_pair.png"), box_by_pair,
+       dpi = 320, width = 16, height = 12)
+box_by_pair
+```
+
+# Correlation structure
+
+```{r corr-by-dab, fig.width=14, fig.height=12, warning=FALSE}
+# One correlation matrix per dAb, arranged into a single faceted figure
+# via patchwork. cAb labels are stripped to "cAbN" only for readability.
+corr_plots <- imap(split_dabs, function(df, dab) {
+  num_df <- df %>% select(-Conc., -Replicates, -target_vector)
+  colnames(num_df) <- sub("^[^_]*_", "", colnames(num_df))
+  cor_mat <- cor(num_df)
+  ggcorrplot(
+    cor_mat,
+    method = "square",
+    hc.order = TRUE,
+    outline.color = "white",
+    tl.cex = 7,
+    tl.srt = 90
+  ) +
+    labs(title = dab) +
+    theme(
+      plot.title = element_text(size = 10, face = "bold"),
+      legend.position = "none",
+      axis.text = element_text(size = 6)
+    )
+})
+
+corr_panel <- wrap_plots(corr_plots, ncol = 4) +
+  plot_annotation(
+    title = "Pair-wise correlation matrix per detection antibody",
+    subtitle = "Computed across all samples; hierarchically ordered"
+  )
+
+ggsave(file.path(output_dir, "correlation_matrix_by_dab.png"), corr_panel,
+       dpi = 320, width = 16, height = 12)
+corr_panel
+```
+
+```{r corr-by-variant, fig.width=14, fig.height=10, warning=FALSE}
+# Same idea but split by variant for a single representative dAb
+# to show how the correlation structure shifts across variants.
+focal_dab <- names(split_dabs)[which.max(map_int(split_dabs, ncol))]
+focal_df <- split_dabs[[focal_dab]]
+
+variant_corr_plots <- map(variant_levels, function(v) {
+  sub_df <- focal_df %>%
+    filter(target_vector == v) %>%
+    select(-Conc., -Replicates, -target_vector)
+  colnames(sub_df) <- sub("^[^_]*_", "", colnames(sub_df))
+  ggcorrplot(
+    cor(sub_df),
+    method = "square",
+    hc.order = TRUE,
+    outline.color = "white",
+    tl.cex = 7,
+    tl.srt = 90
+  ) +
+    labs(title = v) +
+    theme(plot.title = element_text(size = 10, face = "bold"),
+          legend.position = "none",
+          axis.text = element_text(size = 6))
+})
+
+variant_corr_panel <- wrap_plots(variant_corr_plots, ncol = 2) +
+  plot_annotation(
+    title = paste0("Within-variant correlation structure (", focal_dab, ")")
+  )
+
+ggsave(file.path(output_dir, paste0("correlation_by_variant_", focal_dab, ".png")),
+       variant_corr_panel, dpi = 320, width = 12, height = 10)
+variant_corr_panel
+```
+
+# PCA
+
+```{r pca-global, fig.width=12, fig.height=8, warning=FALSE}
+# Helper: bin the (discrete) Conc. column into ordered tertiles by rank.
+# Avoids quantile()-with-ties errors when there are only a handful of dose levels.
+bin_conc <- function(conc) {
+  uniq <- sort(unique(conc))
+  n <- length(uniq)
+  if (n <= 3) {
+    factor(signif(conc, 3), levels = signif(uniq, 3))
+  } else {
+    cuts <- ceiling(seq(1, n, length.out = 4))
+    edges <- uniq[cuts]
+    edges[1] <- edges[1] - 1e-9
+    labels <- c(
+      sprintf("Low (≤ %.3g)", uniq[cuts[2] - 1]),
+      sprintf("Mid-low (≤ %.3g)", uniq[cuts[3] - 1]),
+      sprintf("Mid-high (≤ %.3g)", uniq[cuts[4] - 1]),
+      sprintf("High")
+    )
+    cut(conc, breaks = unique(edges), include.lowest = TRUE,
+        labels = labels[seq_len(length(unique(edges)) - 1)])
+  }
+}
+
+# PCA across the full set of dose-responsive pairs, colored by variant
+# and faceted by concentration bin to surface dose effects vs. variant effects.
+pca_input <- wide_all %>% select(-Conc., -Replicates, -target_vector)
+pca_fit <- prcomp(pca_input, scale. = TRUE)
+
+pca_scores <- as_tibble(pca_fit$x[, 1:4], .name_repair = "minimal") %>%
+  setNames(paste0("PC", 1:4)) %>%
+  bind_cols(wide_all %>% select(Conc., Replicates, target_vector)) %>%
+  mutate(conc_bin = bin_conc(Conc.))
+
+pct_var <- (pca_fit$sdev^2 / sum(pca_fit$sdev^2)) * 100
+
+pca_scatter <- pca_scores %>%
+  ggplot(aes(x = PC1, y = PC2, color = target_vector)) +
+  geom_point(alpha = 0.7, size = 1.5) +
+  facet_wrap(~ conc_bin) +
+  scale_color_manual(values = variant_palette, name = "Variant") +
+  labs(
+    title = "Global PCA of dose-responsive pairs",
+    subtitle = "Faceted by concentration quartile",
+    x = sprintf("PC1 (%.1f%%)", pct_var[1]),
+    y = sprintf("PC2 (%.1f%%)", pct_var[2])
+  ) +
+  theme_minimal(base_size = 11)
+
+ggsave(file.path(output_dir, "pca_global_facet_conc.png"), pca_scatter,
+       dpi = 320, width = 12, height = 8)
+pca_scatter
+```
+
+```{r pca-per-dab, fig.width=14, fig.height=10, warning=FALSE}
+# Per-dAb PCA, each panel showing the first two PCs of that dAb's pairs.
+per_dab_pca <- imap_dfr(split_dabs, function(df, dab) {
+  num_df <- df %>% select(-Conc., -Replicates, -target_vector)
+  if (ncol(num_df) < 2) return(NULL)
+  pr <- prcomp(num_df, scale. = TRUE)
+  ve <- (pr$sdev^2 / sum(pr$sdev^2)) * 100
+  tibble(
+    dAb = dab,
+    PC1 = pr$x[, 1],
+    PC2 = pr$x[, 2],
+    target_vector = df$target_vector,
+    Conc. = df$Conc.,
+    pc1_var = ve[1],
+    pc2_var = ve[2]
+  )
+})
+
+pca_facet <- per_dab_pca %>%
+  ggplot(aes(x = PC1, y = PC2, color = target_vector)) +
+  geom_point(alpha = 0.7, size = 1.2) +
+  facet_wrap(~ dAb, scales = "free") +
+  scale_color_manual(values = variant_palette, name = "Variant") +
+  labs(
+    title = "Per-dAb PCA (PC1 vs PC2)",
+    subtitle = "Each panel is an independent PCA on that dAb's pairs"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "pca_per_dab.png"), pca_facet,
+       dpi = 320, width = 14, height = 10)
+pca_facet
+```
+
+```{r scree-per-dab, fig.width=12, fig.height=8, warning=FALSE}
+scree_df <- imap_dfr(split_dabs, function(df, dab) {
+  num_df <- df %>% select(-Conc., -Replicates, -target_vector)
+  if (ncol(num_df) < 2) return(NULL)
+  pr <- prcomp(num_df, scale. = TRUE)
+  tibble(
+    dAb = dab,
+    PC = seq_along(pr$sdev),
+    pct_var = (pr$sdev^2 / sum(pr$sdev^2)) * 100
+  )
+})
+
+scree_facet <- scree_df %>%
+  filter(PC <= 8) %>%
+  ggplot(aes(x = factor(PC), y = pct_var)) +
+  geom_col(fill = "#3B6FB6") +
+  geom_text(aes(label = sprintf("%.0f", pct_var)), vjust = -0.4, size = 3) +
+  facet_wrap(~ dAb, scales = "free_y") +
+  labs(
+    title = "Scree plots per detection antibody",
+    x = "Principal component",
+    y = "% variance explained"
+  ) +
+  theme_minimal(base_size = 11)
+
+ggsave(file.path(output_dir, "scree_per_dab.png"), scree_facet,
+       dpi = 320, width = 12, height = 8)
+scree_facet
+```
+
+# UMAP
+
+```{r umap-global, fig.width=12, fig.height=8, warning=FALSE, message=FALSE}
+set.seed(42)
+
+umap_input <- scale(pca_input)
+umap_fit <- uwot::umap(umap_input, n_neighbors = 15, min_dist = 0.1, metric = "euclidean")
+
+umap_df <- as.data.frame(umap_fit) %>%
+  setNames(c("UMAP1", "UMAP2")) %>%
+  as_tibble() %>%
+  bind_cols(wide_all %>% select(Conc., target_vector)) %>%
+  mutate(conc_bin = bin_conc(Conc.))
+
+umap_global <- umap_df %>%
+  ggplot(aes(x = UMAP1, y = UMAP2, color = target_vector)) +
+  geom_point(alpha = 0.75, size = 1.5) +
+  facet_wrap(~ conc_bin) +
+  scale_color_manual(values = variant_palette, name = "Variant") +
+  labs(
+    title = "Global UMAP of dose-responsive pairs",
+    subtitle = "Faceted by concentration quartile"
+  ) +
+  theme_minimal(base_size = 11)
+
+ggsave(file.path(output_dir, "umap_global_facet_conc.png"), umap_global,
+       dpi = 320, width = 12, height = 8)
+umap_global
+```
+
+```{r umap-per-dab, fig.width=14, fig.height=10, warning=FALSE, message=FALSE}
+set.seed(42)
+
+per_dab_umap <- imap_dfr(split_dabs, function(df, dab) {
+  num_df <- df %>% select(-Conc., -Replicates, -target_vector)
+  if (ncol(num_df) < 3) return(NULL)
+  nn <- min(15, nrow(num_df) - 1)
+  um <- uwot::umap(scale(num_df), n_neighbors = nn, min_dist = 0.1)
+  tibble(
+    dAb = dab,
+    UMAP1 = um[, 1],
+    UMAP2 = um[, 2],
+    target_vector = df$target_vector
+  )
+})
+
+umap_facet <- per_dab_umap %>%
+  ggplot(aes(x = UMAP1, y = UMAP2, color = target_vector)) +
+  geom_point(alpha = 0.75, size = 1.2) +
+  facet_wrap(~ dAb, scales = "free") +
+  scale_color_manual(values = variant_palette, name = "Variant") +
+  labs(
+    title = "Per-dAb UMAP",
+    subtitle = "Independent embedding per detection antibody"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+
+ggsave(file.path(output_dir, "umap_per_dab.png"), umap_facet,
+       dpi = 320, width = 14, height = 10)
+umap_facet
+```

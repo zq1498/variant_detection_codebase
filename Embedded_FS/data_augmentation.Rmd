@@ -1,0 +1,63 @@
+---
+title: "Untitled"
+output: html_document
+date: "2023-08-07"
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+```
+
+```{r}
+augmented_data = read.csv("C:/Users/Zach/Downloads/covpot_data_aug_processed.csv")
+augmented_data = augmented_data %>% select(-X) %>% rename(Conc. = concentration)
+
+# Need to create a target vector column with Beta, Delta, WT, and Omicron
+labels = str_match(augmented_data$Slide, "(?<=\\_)(.*?)(?=\\_)")[,1]
+augmented_data = augmented_data %>% mutate(target_vector = labels,
+                                           .after=Conc.)
+# Need to log transform the data
+augmented_data = augmented_data %>% mutate_at(vars(starts_with("cAb")), log10) %>% 
+  select(-Slide)
+
+augmented_data
+augmented_data_dab18 = augmented_data[1:288,]
+augmented_data_dab18
+
+augmented_data_dab19 = augmented_data[289:576,]
+augmented_data_dab19
+```
+
+```{r}
+dab18_data = read.csv("dab18_data.csv")
+dab18_data = dab18_data %>% select(-X)
+
+dab19_data = read.csv("dab19_data.csv")
+dab19_data = dab19_data %>% select(-X)
+
+dab18_data
+augmented_data_dab18_colnames = colnames(augmented_data_dab18)
+dab18_data = dab18_data %>% select(augmented_data_dab18_colnames)
+combined_dab18_data = bind_rows(augmented_data_dab18, dab18_data)
+combined_dab18_data$target_vector = as.factor(combined_dab18_data$target_vector)
+
+augmented_dab19_colnames = colnames(augmented_data_dab19)
+dab19_data = dab19_data %>% select(augmented_dab19_colnames)
+combined_dab19_data = bind_rows(augmented_data_dab19, dab19_data)
+combined_dab19_data$target_vector = as.factor(combined_dab19_data$target_vector)
+
+write.csv(combined_dab18_data, "augmented_dab18_data.csv")
+
+write.csv(combined_dab19_data, "augmented_dab19_data.csv")
+
+```
+
+```{r}
+# Actual preliminary model building - random forest
+
+```
+
+```{r}
+# SVM
+```
+

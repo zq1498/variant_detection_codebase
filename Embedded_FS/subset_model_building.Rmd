@@ -32,6 +32,15 @@ summed_subsets = read.csv("pair_subset_results/Summed_ranked_coefs.csv")
 trim_summed_subsets = read.csv("pair_subset_results/trimmed_summed_ranked_coefs.csv")
 trim_summed_subsets
 trim_summed_small_subset = read.csv("pair_subset_results/small_subset_summed_rank_coefs_trim.csv")
+dab_18_data = trimmed_dab_df_list[[5]]
+dab_18_data = dab_18_data %>% setNames(gsub("(.*?)\\_", "", names(.))) %>% rename(target_vector = vector)
+dab_18_data
+
+dab_19_data = trimmed_dab_df_list[[6]]
+dab_19_data = dab_19_data %>% setNames(gsub("(.*?)\\_", "", names(.))) %>% rename(target_vector = vector)
+dab_19_data
+write.csv(dab_18_data, 'dab18_data.csv')
+write.csv(dab_19_data, 'dab19_data.csv')
 ```
 
 ```{r}
